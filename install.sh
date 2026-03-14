@@ -1,8 +1,16 @@
 #!/bin/sh
 
-# Выбор языка / Language selection
+# Настройка лог-файла / Log file setup
+LOG_DIR="/tmp/openwrt_installer"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/install_$(date +%Y%m%d_%H%M%S).log"
+
+# Перенаправляем весь вывод в лог и на экран / Redirect all output to log and screen
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo ""
 echo "╔════════════════════════════════════╗"
-echo "║     Выберите язык / Select language    ║"
+echo "║   Выберите язык / Select language  ║"
 echo "╠════════════════════════════════════╣"
 echo "║ 1) Русский                         ║"
 echo "║ 2) English                          ║"
@@ -18,12 +26,14 @@ while true; do
             LANG="ru"
             echo ""
             echo "Выбран русский язык"
+            echo "Лог сохраняется в: $LOG_FILE"
             break
             ;;
         2)
             LANG="en"
             echo ""
             echo "English selected"
+            echo "Log saved to: $LOG_FILE"
             break
             ;;
         *)
@@ -65,6 +75,7 @@ msg_error() {
     else
         printf "❌ %s\n" "$2"
     fi
+    echo "Лог ошибки: $LOG_FILE" / "Error log: $LOG_FILE"
     exit 1
 }
 
@@ -131,7 +142,7 @@ fi
 echo ""
 msg "Проверка необходимых пакетов..." "Checking required packages..."
 
-packages="parted dosfstools blkid rsync"
+packages="sfdisk dosfstools blkid rsync"
 
 for pkg in $packages; do
     if [ "$LANG" = "ru" ]; then
@@ -160,21 +171,12 @@ done
 echo ""
 msg "Все необходимые пакеты установлены." "All required packages are installed."
 
-# Подавление всех интерактивных запросов parted / Suppress all parted interactive prompts
-msg_info "Проверка дисков..." "Checking disks..."
-
-# Получаем список дисков и автоматически отвечаем "ignore" на все вопросы parted
-parted -l 2>/dev/null | grep "^Disk /dev/" | grep -v "loop\|ram\|sr" | while read -r line; do
-    disk=$(echo "$line" | cut -d' ' -f2 | tr -d ':')
-    # Отвечаем "ignore" на любой вопрос parted про этот диск
-    echo "ignore" | parted ---pretend-input-tty $disk print >/dev/null 2>&1
-done
-# Получаем список дисков через parted / Getting disk list via parted
+# Получаем список дисков через sfdisk / Getting disk list via sfdisk
 echo ""
 msg "Выберите диск для установки OpenWRT:" "Select disk for OpenWRT installation:"
 echo "----------------------------------------"
 
-# Функция получения модели диска / Function to get disk model (без lsblk)
+# Функция получения модели диска / Function to get disk model
 get_disk_model() {
     local disk="$1"
     if [ -f "/sys/block/$(basename "$disk")/device/model" ]; then
@@ -184,13 +186,39 @@ get_disk_model() {
     fi
 }
 
+# Функция получения размера диска / Function to get disk size
+get_disk_size() {
+    local disk="$1"
+    if [ -f "/sys/block/$(basename "$disk")/size" ]; then
+        local sectors=$(cat "/sys/block/$(basename "$disk")/size")
+        local bytes=$((sectors * 512))
+        # Конвертируем в человеко-читаемый формат
+        if [ $bytes -ge 1073741824 ]; then
+            echo "$((bytes / 1073741824))GB"
+        elif [ $bytes -ge 1048576 ]; then
+            echo "$((bytes / 1048576))MB"
+        else
+            echo "$((bytes / 1024))KB"
+        fi
+    else
+        echo "размер неизвестен"
+    fi
+}
+
 # Создаем временный файл для списка дисков / Create temporary file for disk list
 TMP_DISKS=$(mktemp)
 
-# Получаем список дисков (исключаем loop-устройства и cdrom) / Get disk list (exclude loop devices and cdrom)
-parted -l 2>/dev/null | grep "^Disk /dev/" | grep -v "loop\|ram\|sr" | while read -r line; do
-    disk=$(echo "$line" | cut -d' ' -f2 | tr -d ':')
-    size=$(echo "$line" | cut -d' ' -f3)
+# Получаем список дисков через sfdisk
+for disk in /dev/sd* /dev/hd* /dev/vd* /dev/nvme* /dev/mmcblk*; do
+    [ -e "$disk" ] || continue
+    # Проверяем, что это диск, а не раздел
+    if echo "$disk" | grep -q "[0-9]$"; then
+        continue
+    fi
+    # Исключаем loop и ram
+    echo "$disk" | grep -q "loop\|ram\|sr" && continue
+    
+    size=$(get_disk_size "$disk")
     model=$(get_disk_model "$disk")
     echo "$disk|$size|$model" >> "$TMP_DISKS"
 done
@@ -251,7 +279,7 @@ msg "Модель: $SELECTED_MODEL" "Model: $SELECTED_MODEL"
 msg "Размер: $SELECTED_SIZE" "Size: $SELECTED_SIZE"
 echo ""
 
-# Создание GPT таблицы и разделов / Creating GPT table and partitions
+# Создание GPT таблицы и разделов с sfdisk / Creating GPT table and partitions with sfdisk
 echo ""
 msg_warning "Создание разделов на $SELECTED_DISK..." "Creating partitions on $SELECTED_DISK..."
 msg_warning "ВНИМАНИЕ: Все данные на диске будут уничтожены!" "WARNING: All data on the disk will be destroyed!"
@@ -264,44 +292,44 @@ if [ "$CONFIRM" != "yes" ]; then
     msg_error "Операция отменена" "Operation cancelled"
 fi
 
-# Создаем GPT таблицу / Create GPT table
+# Создаем пустую GPT таблицу
 echo ""
 msg "Создание GPT таблицы разделов..." "Creating GPT partition table..."
-if parted -s "$SELECTED_DISK" mklabel gpt; then
+echo "label: gpt" | sfdisk "$SELECTED_DISK" >/dev/null 2>&1
+if [ $? -eq 0 ]; then
     msg_success "GPT таблица создана успешно" "GPT table created successfully"
 else
     msg_error "Ошибка при создании GPT таблицы" "Error creating GPT table"
 fi
 
-# Создаем EFI раздел (256 МБ) / Create EFI partition (256 MB)
+# Создаем EFI раздел (256 МБ)
 echo ""
 msg "Создание EFI раздела (256 МБ)..." "Creating EFI partition (256 MB)..."
-if parted -s "$SELECTED_DISK" mkpart primary fat32 1MiB 256MiB; then
+echo "start=1MiB, size=255MiB, type=uefi" | sfdisk -a "$SELECTED_DISK" >/dev/null 2>&1
+if [ $? -eq 0 ]; then
     msg_success "EFI раздел создан" "EFI partition created"
 else
     msg_error "Ошибка при создании EFI раздела" "Error creating EFI partition"
 fi
 
-# Устанавливаем флаг ESP / Set ESP flag
-if parted -s "$SELECTED_DISK" set 1 esp on; then
-    msg_success "Флаг ESP установлен на раздел 1" "ESP flag set on partition 1"
-else
-    msg_error "Ошибка при установке флага ESP" "Error setting ESP flag"
-fi
-
-# Создаем DATA раздел (всё оставшееся место) / Create DATA partition (all remaining space)
+# Создаем DATA раздел (всё оставшееся место)
 echo ""
 msg "Создание DATA раздела на оставшемся месте..." "Creating DATA partition on remaining space..."
-if parted -s "$SELECTED_DISK" mkpart primary ext4 257MiB 100%; then
+echo "start=256MiB, type=linux" | sfdisk -a "$SELECTED_DISK" >/dev/null 2>&1
+if [ $? -eq 0 ]; then
     msg_success "DATA раздел создан на оставшемся месте" "DATA partition created on remaining space"
 else
     msg_error "Ошибка при создании DATA раздела" "Error creating DATA partition"
 fi
 
+# Обновляем информацию о разделах в ядре
+partprobe "$SELECTED_DISK" 2>/dev/null || true
+sleep 2
+
 # Показываем итоговую таблицу разделов / Show final partition table
 echo ""
 msg "Итоговая таблица разделов:" "Final partition table:"
-parted -s "$SELECTED_DISK" print
+sfdisk -l "$SELECTED_DISK"
 
 # Определяем имена разделов / Determine partition names
 if echo "$SELECTED_DISK" | grep -q "nvme\|mmcblk"; then
@@ -343,14 +371,27 @@ echo "----------------------------------------"
 
 TMP_RESULT=$(mktemp)
 
-parted -l 2>/dev/null | grep "^Disk /dev/" | grep -v "loop\|ram\|sr" | while read -r line; do
-    disk=$(echo "$line" | cut -d' ' -f2 | tr -d ':')
+# Получаем список дисков через sfdisk
+for disk in /dev/sd* /dev/hd* /dev/vd* /dev/nvme* /dev/mmcblk*; do
+    [ -e "$disk" ] || continue
+    # Проверяем, что это диск, а не раздел
+    if echo "$disk" | grep -q "[0-9]$"; then
+        continue
+    fi
+    echo "$disk" | grep -q "loop\|ram\|sr" && continue
+    
+    # Определяем второй раздел
+    if echo "$disk" | grep -q "nvme\|mmcblk"; then
+        part="${disk}p2"
+    else
+        part="${disk}2"
+    fi
     
     # Создаем временную точку монтирования / Create temporary mount point
     mkdir -p /tmp/check_openwrt
     
     # Пробуем смонтировать второй раздел / Try to mount second partition
-    if mount "${disk}2" /tmp/check_openwrt 2>/dev/null; then
+    if mount "$part" /tmp/check_openwrt 2>/dev/null; then
         
         # Проверяем характерные для OpenWRT файлы / Check for OpenWRT specific files
         if [ -f "/tmp/check_openwrt/etc/openwrt_release" ] || \
@@ -444,7 +485,6 @@ fi
 echo ""
 msg "Копирование DATA раздела (это может занять некоторое время)..." "Copying DATA partition (this may take a while)..."
 
-# ПРОСТОЕ КОПИРОВАНИЕ БЕЗ ЛЮБЫХ ПРОГРЕСС-БАРОВ
 if ! command -v rsync >/dev/null 2>&1; then
     cp -a /mnt/src_data/* /mnt/dst_data/
     COPY_RESULT=$?
@@ -519,6 +559,8 @@ umount /mnt/src_efi /mnt/src_data /mnt/dst_efi /mnt/dst_data
 
 echo ""
 msg_success "Установка успешно завершена!" "Installation completed successfully!"
+msg "Лог установки: $LOG_FILE" "Installation log: $LOG_FILE"
+echo ""
 msg "Можно перезагружать систему с нового диска." "You can now reboot from the new disk."
 echo ""
 msg_important "ВАЖНО: После перезагрузки зайдите в BIOS/Boot Menu" "IMPORTANT: After reboot, enter BIOS/Boot Menu"
