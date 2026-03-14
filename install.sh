@@ -8,13 +8,12 @@ LOG_FILE="$LOG_DIR/install_$(date +%Y%m%d_%H%M%S).log"
 # Перенаправляем весь вывод в лог и на экран / Redirect all output to log and screen
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo ""
-echo "╔════════════════════════════════════╗"
-echo "║   Выберите язык / Select language  ║"
-echo "╠════════════════════════════════════╣"
-echo "║ 1) Русский                         ║"
-echo "║ 2) English                          ║"
-echo "╚════════════════════════════════════╝"
+echo "=================================================="
+echo "     Выберите язык / Select language"
+echo "=================================================="
+echo "1) Русский"
+echo "2) English"
+echo "=================================================="
 echo ""
 
 while true; do
@@ -72,10 +71,46 @@ msg_success() {
 msg_error() {
     if [ "$LANG" = "ru" ]; then
         printf "❌ %s\n" "$1"
+        echo ""
+        echo "Лог ошибки: $LOG_FILE"
+        echo ""
+        printf "Открыть лог? (y/n): "
+        read -r OPEN_LOG
+        if [ "$OPEN_LOG" = "y" ] || [ "$OPEN_LOG" = "Y" ]; then
+            # Пробуем разные редакторы по порядку
+            if command -v nano >/dev/null 2>&1; then
+                nano "$LOG_FILE"
+            elif command -v vi >/dev/null 2>&1; then
+                vi "$LOG_FILE"
+            elif command -v vim >/dev/null 2>&1; then
+                vim "$LOG_FILE"
+            elif command -v less >/dev/null 2>&1; then
+                less "$LOG_FILE"
+            else
+                echo "Редактор не найден. Лог доступен по пути: $LOG_FILE"
+            fi
+        fi
     else
         printf "❌ %s\n" "$2"
+        echo ""
+        echo "Error log: $LOG_FILE"
+        echo ""
+        printf "Open log? (y/n): "
+        read -r OPEN_LOG
+        if [ "$OPEN_LOG" = "y" ] || [ "$OPEN_LOG" = "Y" ]; then
+            if command -v nano >/dev/null 2>&1; then
+                nano "$LOG_FILE"
+            elif command -v vi >/dev/null 2>&1; then
+                vi "$LOG_FILE"
+            elif command -v vim >/dev/null 2>&1; then
+                vim "$LOG_FILE"
+            elif command -v less >/dev/null 2>&1; then
+                less "$LOG_FILE"
+            else
+                echo "No editor found. Log available at: $LOG_FILE"
+            fi
+        fi
     fi
-    echo "Лог ошибки: $LOG_FILE" / "Error log: $LOG_FILE"
     exit 1
 }
 
@@ -142,7 +177,7 @@ fi
 echo ""
 msg "Проверка необходимых пакетов..." "Checking required packages..."
 
-packages="sfdisk dosfstools blkid rsync"
+packages="sfdisk dosfstools blkid rsync nano"
 
 for pkg in $packages; do
     if [ "$LANG" = "ru" ]; then
@@ -171,7 +206,7 @@ done
 echo ""
 msg "Все необходимые пакеты установлены." "All required packages are installed."
 
-# Получаем список дисков через sfdisk / Getting disk list via sfdisk
+# Получаем список дисков / Getting disk list
 echo ""
 msg "Выберите диск для установки OpenWRT:" "Select disk for OpenWRT installation:"
 echo "----------------------------------------"
@@ -192,7 +227,6 @@ get_disk_size() {
     if [ -f "/sys/block/$(basename "$disk")/size" ]; then
         local sectors=$(cat "/sys/block/$(basename "$disk")/size")
         local bytes=$((sectors * 512))
-        # Конвертируем в человеко-читаемый формат
         if [ $bytes -ge 1073741824 ]; then
             echo "$((bytes / 1073741824))GB"
         elif [ $bytes -ge 1048576 ]; then
@@ -208,14 +242,12 @@ get_disk_size() {
 # Создаем временный файл для списка дисков / Create temporary file for disk list
 TMP_DISKS=$(mktemp)
 
-# Получаем список дисков через sfdisk
+# Получаем список дисков через /sys/block/
 for disk in /dev/sd* /dev/hd* /dev/vd* /dev/nvme* /dev/mmcblk*; do
     [ -e "$disk" ] || continue
-    # Проверяем, что это диск, а не раздел
     if echo "$disk" | grep -q "[0-9]$"; then
         continue
     fi
-    # Исключаем loop и ram
     echo "$disk" | grep -q "loop\|ram\|sr" && continue
     
     size=$(get_disk_size "$disk")
@@ -223,18 +255,15 @@ for disk in /dev/sd* /dev/hd* /dev/vd* /dev/nvme* /dev/mmcblk*; do
     echo "$disk|$size|$model" >> "$TMP_DISKS"
 done
 
-# Проверяем, что диски найдены / Check if disks found
 if [ ! -s "$TMP_DISKS" ]; then
     msg_error "Диски не найдены" "No disks found"
 fi
 
-# Показываем диски с моделями / Show disks with models
 printf "%-3s %-12s %-10s %s\n" "№" "Диск" "Размер" "Модель"
 echo "----------------------------------------"
 
 i=1
 while IFS='|' read -r disk size model; do
-    # Обрезаем модель, если слишком длинная
     if [ ${#model} -gt 30 ]; then
         model="${model:0:27}..."
     fi
@@ -247,18 +276,15 @@ echo ""
 
 DISK_COUNT=$((i - 1))
 
-# Запрашиваем выбор диска / Ask for disk selection
 while true; do
     msg_prompt "Выберите номер диска для установки (1-$DISK_COUNT): " "Select disk number for installation (1-$DISK_COUNT): "
     read -r CHOICE
 
-    # Проверяем, что введено число / Check if input is a number
     if ! echo "$CHOICE" | grep -q '^[0-9]\+$'; then
         msg "Ошибка: введите число" "Error: enter a number"
         continue
     fi
 
-    # Проверяем, что число в диапазоне / Check if number is in range
     if [ "$CHOICE" -lt 1 ] || [ "$CHOICE" -gt "$DISK_COUNT" ]; then
         msg "Ошибка: введите число от 1 до $DISK_COUNT" "Error: enter a number from 1 to $DISK_COUNT"
         continue
@@ -267,7 +293,6 @@ while true; do
     break
 done
 
-# Получаем выбранный диск / Get selected disk
 SELECTED_DISK=$(sed -n "${CHOICE}p" "$TMP_DISKS" | cut -d'|' -f1)
 SELECTED_MODEL=$(sed -n "${CHOICE}p" "$TMP_DISKS" | cut -d'|' -f3)
 SELECTED_SIZE=$(sed -n "${CHOICE}p" "$TMP_DISKS" | cut -d'|' -f2)
@@ -285,14 +310,12 @@ msg_warning "Создание разделов на $SELECTED_DISK..." "Creating
 msg_warning "ВНИМАНИЕ: Все данные на диске будут уничтожены!" "WARNING: All data on the disk will be destroyed!"
 echo ""
 
-# Финальное предупреждение перед записью / Final warning before writing
 msg_prompt "Продолжить? (yes/no): " "Continue? (yes/no): "
 read -r CONFIRM
 if [ "$CONFIRM" != "yes" ]; then
     msg_error "Операция отменена" "Operation cancelled"
 fi
 
-# Создаем пустую GPT таблицу
 echo ""
 msg "Создание GPT таблицы разделов..." "Creating GPT partition table..."
 echo "label: gpt" | sfdisk "$SELECTED_DISK" >/dev/null 2>&1
@@ -302,7 +325,6 @@ else
     msg_error "Ошибка при создании GPT таблицы" "Error creating GPT table"
 fi
 
-# Создаем EFI раздел (256 МБ)
 echo ""
 msg "Создание EFI раздела (256 МБ)..." "Creating EFI partition (256 MB)..."
 echo "start=1MiB, size=255MiB, type=uefi" | sfdisk -a "$SELECTED_DISK" >/dev/null 2>&1
@@ -312,7 +334,6 @@ else
     msg_error "Ошибка при создании EFI раздела" "Error creating EFI partition"
 fi
 
-# Создаем DATA раздел (всё оставшееся место)
 echo ""
 msg "Создание DATA раздела на оставшемся месте..." "Creating DATA partition on remaining space..."
 echo "start=256MiB, type=linux" | sfdisk -a "$SELECTED_DISK" >/dev/null 2>&1
@@ -322,11 +343,9 @@ else
     msg_error "Ошибка при создании DATA раздела" "Error creating DATA partition"
 fi
 
-# Обновляем информацию о разделах в ядре
 partprobe "$SELECTED_DISK" 2>/dev/null || true
 sleep 2
 
-# Показываем итоговую таблицу разделов / Show final partition table
 echo ""
 msg "Итоговая таблица разделов:" "Final partition table:"
 sfdisk -l "$SELECTED_DISK"
@@ -344,7 +363,6 @@ fi
 echo ""
 msg "Форматирование разделов..." "Formatting partitions..."
 
-# Форматирование EFI раздела (FAT32) / Format EFI partition (FAT32)
 msg "Форматирование EFI раздела $EFI_PART в FAT32..." "Formatting EFI partition $EFI_PART as FAT32..."
 if mkfs.fat -F 32 -n EFI "$EFI_PART"; then
     msg_success "EFI раздел отформатирован в FAT32 с меткой 'EFI'" "EFI partition formatted as FAT32 with label 'EFI'"
@@ -352,7 +370,6 @@ else
     msg_error "Ошибка при форматировании EFI раздела" "Error formatting EFI partition"
 fi
 
-# Форматирование DATA раздела (ext4) / Format DATA partition (ext4)
 echo ""
 msg "Форматирование DATA раздела $DATA_PART в ext4..." "Formatting DATA partition $DATA_PART as ext4..."
 if mkfs.ext4 -F -L DATA "$DATA_PART"; then
@@ -371,29 +388,22 @@ echo "----------------------------------------"
 
 TMP_RESULT=$(mktemp)
 
-# Получаем список дисков через sfdisk
 for disk in /dev/sd* /dev/hd* /dev/vd* /dev/nvme* /dev/mmcblk*; do
     [ -e "$disk" ] || continue
-    # Проверяем, что это диск, а не раздел
     if echo "$disk" | grep -q "[0-9]$"; then
         continue
     fi
     echo "$disk" | grep -q "loop\|ram\|sr" && continue
     
-    # Определяем второй раздел
     if echo "$disk" | grep -q "nvme\|mmcblk"; then
         part="${disk}p2"
     else
         part="${disk}2"
     fi
     
-    # Создаем временную точку монтирования / Create temporary mount point
     mkdir -p /tmp/check_openwrt
     
-    # Пробуем смонтировать второй раздел / Try to mount second partition
     if mount "$part" /tmp/check_openwrt 2>/dev/null; then
-        
-        # Проверяем характерные для OpenWRT файлы / Check for OpenWRT specific files
         if [ -f "/tmp/check_openwrt/etc/openwrt_release" ] || \
            [ -f "/tmp/check_openwrt/etc/banner" ] || \
            [ -d "/tmp/check_openwrt/etc/opkg" ]; then
@@ -411,7 +421,6 @@ done
 
 rmdir /tmp/check_openwrt 2>/dev/null
 
-# Читаем результат / Read result
 if [ -s "$TMP_RESULT" ]; then
     SYSTEM_DISK=$(cat "$TMP_RESULT")
     rm -f "$TMP_RESULT"
@@ -421,10 +430,8 @@ else
     msg_error "Не удалось определить диск с OpenWRT" "Failed to determine disk with OpenWRT"
 fi
 
-# Устанавливаем TARGET_DISK из SELECTED_DISK / Set TARGET_DISK from SELECTED_DISK
 TARGET_DISK="$SELECTED_DISK"
 
-# Проверяем, что диски разные / Check if disks are different
 if [ "$SYSTEM_DISK" = "$TARGET_DISK" ]; then
     msg_error "Ошибка: системный и целевой диски совпадают!" "Error: system and target disks are the same!"
 fi
@@ -435,7 +442,6 @@ msg "  СИСТЕМНЫЙ диск: $SYSTEM_DISK (USB-флешка)" "  SYSTEM d
 msg "  ЦЕЛЕВОЙ диск: $TARGET_DISK (внутренний)" "  TARGET disk: $TARGET_DISK (internal)"
 echo ""
 
-# Определяем имена разделов для копирования / Determine partition names for copying
 if echo "$SYSTEM_DISK" | grep -q "nvme\|mmcblk"; then
     SRC_EFI="${SYSTEM_DISK}p1"
     SRC_DATA="${SYSTEM_DISK}p2"
@@ -452,20 +458,16 @@ else
     DST_DATA="${TARGET_DISK}2"
 fi
 
-# Создаем точки монтирования / Create mount points
 mkdir -p /mnt/src_efi /mnt/src_data /mnt/dst_efi /mnt/dst_data
 
-# Монтируем исходные разделы / Mount source partitions
 msg "Монтирование исходных разделов..." "Mounting source partitions..."
 mount "$SRC_EFI" /mnt/src_efi || msg_error "Ошибка монтирования EFI раздела" "Error mounting EFI partition"
 mount "$SRC_DATA" /mnt/src_data || msg_error "Ошибка монтирования DATA раздела" "Error mounting DATA partition"
 
-# Монтируем целевые разделы / Mount target partitions
 msg "Монтирование целевых разделов..." "Mounting target partitions..."
 mount "$DST_EFI" /mnt/dst_efi || msg_error "Ошибка монтирования целевого EFI раздела" "Error mounting target EFI partition"
 mount "$DST_DATA" /mnt/dst_data || msg_error "Ошибка монтирования целевого DATA раздела" "Error mounting target DATA partition"
 
-# Копирование EFI раздела / Copying EFI partition
 echo ""
 msg "Копирование EFI раздела..." "Copying EFI partition..."
 
@@ -481,7 +483,6 @@ else
     msg_error "Ошибка копирования EFI раздела" "Error copying EFI partition"
 fi
 
-# Копирование DATA раздела / Copying DATA partition
 echo ""
 msg "Копирование DATA раздела (это может занять некоторое время)..." "Copying DATA partition (this may take a while)..."
 
@@ -496,7 +497,6 @@ fi
 if [ $COPY_RESULT -eq 0 ]; then
     msg_success "DATA раздел скопирован" "DATA partition copied"
     
-    # Показываем итоговую статистику / Show final statistics
     DST_FILES=$(find /mnt/dst_data -type f | wc -l)
     msg "Скопировано файлов: $DST_FILES" "Files copied: $DST_FILES"
     
@@ -516,7 +516,6 @@ else
     TARGET_PART2="${TARGET_DISK}2"
 fi
 
-# Получаем PARTUUID / Get PARTUUID
 TARGET_PARTUUID=$(blkid "$TARGET_PART2" | sed -n 's/.*PARTUUID="\([^"]*\)".*/\1/p')
 
 if [ -z "$TARGET_PARTUUID" ]; then
@@ -526,25 +525,21 @@ fi
 msg_success "PARTUUID второго раздела: $TARGET_PARTUUID" "Second partition PARTUUID: $TARGET_PARTUUID"
 echo ""
 
-# Редактируем grub.cfg / Edit grub.cfg
 GRUB_CFG="/mnt/dst_efi/boot/grub/grub.cfg"
 
 if [ ! -f "$GRUB_CFG" ]; then
     msg_error "Ошибка: файл $GRUB_CFG не найден" "Error: file $GRUB_CFG not found"
 fi
 
-# Создаем резервную копию / Create backup
 cp "$GRUB_CFG" "${GRUB_CFG}.bak"
 msg "  ✓ Создана резервная копия: ${GRUB_CFG}.bak" "  ✓ Backup created: ${GRUB_CFG}.bak"
 
-# Заменяем PARTUUID / Replace PARTUUID
 if sed -i "s/[a-f0-9]\{8\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{12\}/$TARGET_PARTUUID/g" "$GRUB_CFG"; then
     msg_success "PARTUUID заменены в grub.cfg" "PARTUUID replaced in grub.cfg"
 else
     msg_error "Ошибка при замене PARTUUID" "Error replacing PARTUUID"
 fi
 
-# Показываем результат / Show result
 echo ""
 msg "Первые несколько строк измененного grub.cfg:" "First few lines of modified grub.cfg:"
 head -20 "$GRUB_CFG" | grep -i "PARTUUID" --color=always
