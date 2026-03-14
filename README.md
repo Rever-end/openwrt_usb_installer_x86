@@ -182,7 +182,3 @@ MIT License. See LICENSE file for details.
 Author
 
 Rever-end
-
-```
-
-Теперь README полностью соответствует новой версии скрипта!
