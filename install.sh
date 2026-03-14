@@ -160,25 +160,15 @@ done
 echo ""
 msg "Все необходимые пакеты установлены." "All required packages are installed."
 
-# Проверка GPT (опционально) / GPT check (optional)
-echo ""
-msg_info "Хотите проверить и исправить таблицы разделов? (рекомендуется)" "Do you want to check and fix partition tables? (recommended)"
-msg_prompt "Выполнить проверку? (y/n): " "Run check? (y/n): "
-read -r FIX_GPT
+# Подавление всех интерактивных запросов parted / Suppress all parted interactive prompts
+msg_info "Проверка дисков..." "Checking disks..."
 
-if [ "$FIX_GPT" = "y" ] || [ "$FIX_GPT" = "Y" ]; then
-    msg_info "Проверка и исправление таблиц разделов..." "Checking and fixing partition tables..."
-    
-    # Получаем список дисков через parted
-    parted -l 2>/dev/null | grep "^Disk /dev/" | grep -v "loop\|ram\|sr" | while read -r line; do
-        disk=$(echo "$line" | cut -d' ' -f2 | tr -d ':')
-        echo "fix" | parted ---pretend-input-tty $disk print >/dev/null 2>&1
-    done
-    
-    msg_success "Проверка завершена" "Check completed"
-else
-    msg_info "Проверка пропущена" "Check skipped"
-fi
+# Получаем список дисков и автоматически отвечаем "fix" на все вопросы parted
+parted -l 2>/dev/null | grep "^Disk /dev/" | grep -v "loop\|ram\|sr" | while read -r line; do
+    disk=$(echo "$line" | cut -d' ' -f2 | tr -d ':')
+    # Отвечаем "fix" на любой вопрос parted про этот диск
+    echo "fix" | parted ---pretend-input-tty $disk print >/dev/null 2>&1
+done
 
 # Получаем список дисков через parted / Getting disk list via parted
 echo ""
