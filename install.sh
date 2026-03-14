@@ -162,8 +162,11 @@ msg "Все необходимые пакеты установлены." "All re
 
 # Исправление проблем с GPT перед сканированием / Fix GPT issues before scanning
 msg_info "Проверка и исправление таблиц разделов..." "Checking and fixing partition tables..."
-for disk in $(lsblk -d -o NAME -n | grep -v "loop\|ram\|sr" | grep -E "^sd|^hd|^vd|^nvme|^mmcblk"); do
-    echo "fix" | parted ---pretend-input-tty /dev/$disk print >/dev/null 2>&1
+
+# Получаем список дисков через parted (без lsblk)
+parted -l 2>/dev/null | grep "^Disk /dev/" | grep -v "loop\|ram\|sr" | while read -r line; do
+    disk=$(echo "$line" | cut -d' ' -f2 | tr -d ':')
+    echo "fix" | parted ---pretend-input-tty $disk print >/dev/null 2>&1
 done
 
 # Получаем список дисков через parted / Getting disk list via parted
