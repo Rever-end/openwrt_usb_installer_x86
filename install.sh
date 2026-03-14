@@ -163,7 +163,7 @@ msg "Все необходимые пакеты установлены." "All re
 # Исправление проблем с GPT перед сканированием / Fix GPT issues before scanning
 msg_info "Проверка и исправление таблиц разделов..." "Checking and fixing partition tables..."
 
-# Получаем список дисков через parted (без lsblk)
+# Получаем список дисков через parted и исправляем GPT
 parted -l 2>/dev/null | grep "^Disk /dev/" | grep -v "loop\|ram\|sr" | while read -r line; do
     disk=$(echo "$line" | cut -d' ' -f2 | tr -d ':')
     echo "fix" | parted ---pretend-input-tty $disk print >/dev/null 2>&1
@@ -174,13 +174,11 @@ echo ""
 msg "Выберите диск для установки OpenWRT:" "Select disk for OpenWRT installation:"
 echo "----------------------------------------"
 
-# Функция получения модели диска / Function to get disk model
+# Функция получения модели диска / Function to get disk model (без lsblk)
 get_disk_model() {
     local disk="$1"
-    if command -v lsblk >/dev/null 2>&1; then
-        lsblk -d -o MODEL -n "$disk" 2>/dev/null | head -1 | sed 's/^[ \t]*//;s/[ \t]*$//'
-    elif [ -f "/sys/block/$(basename "$disk")/device/model" ]; then
-        cat "/sys/block/$(basename "$disk")/device/model" 2>/dev/null
+    if [ -f "/sys/block/$(basename "$disk")/device/model" ]; then
+        cat "/sys/block/$(basename "$disk")/device/model" 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//'
     else
         echo "модель неизвестна / unknown model"
     fi
