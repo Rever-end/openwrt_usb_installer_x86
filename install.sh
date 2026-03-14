@@ -163,13 +163,12 @@ msg "Все необходимые пакеты установлены." "All re
 # Подавление всех интерактивных запросов parted / Suppress all parted interactive prompts
 msg_info "Проверка дисков..." "Checking disks..."
 
-# Получаем список дисков и автоматически отвечаем "fix" на все вопросы parted
+# Получаем список дисков и автоматически отвечаем "ignore" на все вопросы parted
 parted -l 2>/dev/null | grep "^Disk /dev/" | grep -v "loop\|ram\|sr" | while read -r line; do
     disk=$(echo "$line" | cut -d' ' -f2 | tr -d ':')
-    # Отвечаем "fix" на любой вопрос parted про этот диск
-    echo "fix" | parted ---pretend-input-tty $disk print >/dev/null 2>&1
+    # Отвечаем "ignore" на любой вопрос parted про этот диск
+    echo "ignore" | parted ---pretend-input-tty $disk print >/dev/null 2>&1
 done
-
 # Получаем список дисков через parted / Getting disk list via parted
 echo ""
 msg "Выберите диск для установки OpenWRT:" "Select disk for OpenWRT installation:"
