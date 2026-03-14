@@ -131,7 +131,7 @@ fi
 echo ""
 msg "Проверка необходимых пакетов..." "Checking required packages..."
 
-packages="parted dosfstools blkid nano rsync"
+packages="parted dosfstools blkid rsync"
 
 for pkg in $packages; do
     if [ "$LANG" = "ru" ]; then
@@ -159,6 +159,12 @@ done
 
 echo ""
 msg "Все необходимые пакеты установлены." "All required packages are installed."
+
+# Исправление проблем с GPT перед сканированием / Fix GPT issues before scanning
+msg_info "Проверка и исправление таблиц разделов..." "Checking and fixing partition tables..."
+for disk in $(lsblk -d -o NAME -n | grep -v "loop\|ram\|sr" | grep -E "^sd|^hd|^vd|^nvme|^mmcblk"); do
+    echo "fix" | parted ---pretend-input-tty /dev/$disk print >/dev/null 2>&1
+done
 
 # Получаем список дисков через parted / Getting disk list via parted
 echo ""
