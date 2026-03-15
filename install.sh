@@ -94,7 +94,7 @@ choose_language() {
     esac
 }
 
-# ========== ФУНКЦИЯ ПРОВЕРКИ ИНТЕРНЕТА (ИСПРАВЛЕННАЯ) ==========
+# ========== ФУНКЦИЯ ПРОВЕРКИ ИНТЕРНЕТА ==========
 check_internet() {
     log "INFO" "Проверка подключения к интернету..."
     
@@ -129,7 +129,6 @@ check_internet() {
         return 1
     fi
 }
-# ========== КОНЕЦ ФУНКЦИИ ПРОВЕРКИ ИНТЕРНЕТА ==========
 
 # Установка необходимых пакетов
 install_packages() {
@@ -267,7 +266,7 @@ select_target_disk() {
         error_exit "Invalid disk number / Неверный номер диска"
     fi
     
-    # Получаем выбранный диск (упрощенно, без сложного парсинга)
+    # Получаем выбранный диск
     SELECTED_DISK="/dev/$(ls /sys/block | grep -v loop | grep -v ram | grep -v sr | sed -n "${DISK_NUM}p")"
     
     if [ "$LANG" = "ru" ]; then
@@ -411,7 +410,7 @@ create_partitions() {
     fi
 }
 
-# Форматирование разделов
+# ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ ФОРМАТИРОВАНИЯ ==========
 format_partitions() {
     log "INFO" "Форматирование разделов"
     
@@ -421,9 +420,26 @@ format_partitions() {
         echo -e "${YELLOW}Formatting partitions...${NC}"
     fi
     
+    # Определяем доступную команду для FAT
+    FAT_CMD=""
+    if command -v mkfs.fat >/dev/null 2>&1; then
+        FAT_CMD="mkfs.fat"
+        log "INFO" "Найдена команда mkfs.fat"
+    elif command -v mkfs.vfat >/dev/null 2>&1; then
+        FAT_CMD="mkfs.vfat"
+        log "INFO" "Найдена команда mkfs.vfat"
+    elif command -v mkfs.msdos >/dev/null 2>&1; then
+        FAT_CMD="mkfs.msdos"
+        log "INFO" "Найдена команда mkfs.msdos"
+    else
+        error_exit "No FAT formatter found (tried mkfs.fat, mkfs.vfat, mkfs.msdos)"
+    fi
+    
+    log "INFO" "Используется команда для FAT: $FAT_CMD"
+    
     # Форматирование EFI в FAT32
     log "INFO" "Форматирование $EFI_PART в FAT32"
-    mkfs.vfat -F32 -n "EFI" "$EFI_PART" >> "$LOG_FILE" 2>&1
+    $FAT_CMD -F32 -n "EFI" "$EFI_PART" >> "$LOG_FILE" 2>&1
     if [ $? -ne 0 ]; then
         error_exit "Failed to format EFI partition / Не удалось отформатировать EFI раздел"
     fi
@@ -441,6 +457,7 @@ format_partitions() {
         echo -e "${GREEN}Formatting completed${NC}"
     fi
 }
+# ========== КОНЕЦ ИСПРАВЛЕННОЙ ФУНКЦИИ ==========
 
 # Монтирование разделов
 mount_partitions() {
