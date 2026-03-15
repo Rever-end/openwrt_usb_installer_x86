@@ -1019,8 +1019,8 @@ copy_system() {
     TEMP_RSYNC_OUT="/tmp/rsync_out.$$"
     
     if command -v rsync >/dev/null 2>&1; then
-        # rsync с минимальным выводом (только общий прогресс)
-        rsync -a --info=progress2 /mnt/source_boot/ /mnt/efi/ 2>&1 | tee "$TEMP_RSYNC_OUT"
+        # Тихое копирование, сохраняем вывод для получения размера
+        rsync -a /mnt/source_boot/ /mnt/efi/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
         # Парсим итоговый размер из вывода rsync
@@ -1043,7 +1043,7 @@ copy_system() {
         fi
         rm -f "$TEMP_RSYNC_OUT"
     else
-        # cp - тихо копирует
+        # cp - тихо копирует, но не даёт статистики
         cp -a /mnt/source_boot/. /mnt/efi/ >> "$LOG_FILE" 2>&1
         if [ $? -eq 0 ]; then
             if [ "$LANG" = "ru" ]; then
@@ -1065,7 +1065,7 @@ copy_system() {
     fi
     
     if command -v rsync >/dev/null 2>&1; then
-        rsync -a --info=progress2 /mnt/source_data/ /mnt/data/ 2>&1 | tee "$TEMP_RSYNC_OUT"
+        rsync -a /mnt/source_data/ /mnt/data/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
         if [ $RSYNC_EXIT -eq 0 ]; then
@@ -1206,7 +1206,12 @@ cleanup() {
         echo -e "${GREEN}Установка завершена!${NC}"
         echo -e "${RED}========================================${NC}"
         # Жирный текст и ПОЛНОСТЬЮ КАПС для важного сообщения
-        echo -e "${RED}${BOLD}ВАЖНО: ПОСЛЕ ПЕРЕЗАГРУЗКИ ВЫБЕРИТЕ НОВЫЙ ДИСК В BIOS/UEFI${NC}"
+        echo -e "${RED}${BOLD}ВАЖНО: ПОСЛЕ ПЕРЕЗАГРУЗКИ ВЫБЕРИТЕ НОВЫЙ ДИСК В BOOT MENU BIOS/UEFI${NC}"
+        echo -e ""
+        echo -e "${YELLOW}Для входа в Boot Menu обычно используются клавиши:${NC}"
+        echo -e "  ${BOLD}F2, F8, F10, F11, F12, Del, Esc${NC}"
+        echo -e "${YELLOW}Нажмите нужную клавишу сразу после включения питания${NC}"
+        echo -e ""
         echo -e "${YELLOW}Лог установки: $LOG_FILE${NC}"
         echo -e "${GREEN}========================================${NC}\n"
     else
@@ -1214,7 +1219,12 @@ cleanup() {
         echo -e "${GREEN}Installation completed!${NC}"
         echo -e "${RED}========================================${NC}"
         # Жирный текст и ПОЛНОСТЬЮ КАПС для важного сообщения
-        echo -e "${RED}${BOLD}IMPORTANT: AFTER REBOOT, SELECT THE NEW DISK IN BIOS/UEFI${NC}"
+        echo -e "${RED}${BOLD}IMPORTANT: AFTER REBOOT, SELECT THE NEW DISK IN BOOT MENU BIOS/UEFI${NC}"
+        echo -e ""
+        echo -e "${YELLOW}Common keys to enter Boot Menu:${NC}"
+        echo -e "  ${BOLD}F2, F8, F10, F11, F12, Del, Esc${NC}"
+        echo -e "${YELLOW}Press the appropriate key immediately after power on${NC}"
+        echo -e ""
         echo -e "${YELLOW}Installation log: $LOG_FILE${NC}"
         echo -e "${GREEN}========================================${NC}\n"
     fi
