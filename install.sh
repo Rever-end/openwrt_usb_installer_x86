@@ -383,32 +383,67 @@ find_source_disk() {
         esac
     done < /proc/mounts
     
-    FOUND_SOURCE=""
+    SOURCE_DISK=""
     
+    # Если нашли оба раздела
     if [ -n "$BOOT_PART" ] && [ -n "$ROOT_PART" ]; then
         # Извлекаем имя диска из разделов
         BOOT_DISK=$(echo "$BOOT_PART" | sed 's/[0-9]*$//')
         ROOT_DISK=$(echo "$ROOT_PART" | sed 's/[0-9]*$//')
         
         if [ "$BOOT_DISK" = "$ROOT_DISK" ]; then
-            FOUND_SOURCE="$BOOT_DISK"
-            log "INFO" "Найден предполагаемый исходный диск: $FOUND_SOURCE"
+            SOURCE_DISK="$BOOT_DISK"
+            log "INFO" "Найден исходный диск: $SOURCE_DISK"
         fi
     fi
     
-    if [ -n "$FOUND_SOURCE" ]; then
-        if [ "$LANG" = "ru" ]; then
-            echo -e "${GREEN}Найден диск с OpenWRT: $FOUND_SOURCE${NC}"
-            echo -e "${YELLOW}Копируем систему с этого диска?${NC}"
-            read -p "$(echo -e "${YELLOW}(y/N): ${NC}")" SOURCE_CONFIRM
-        else
-            echo -e "${GREEN}Found OpenWRT disk: $FOUND_SOURCE${NC}"
-            echo -e "${YELLOW}Copy system from this disk?${NC}"
-            read -p "$(echo -e "${YELLOW}(y/N): ${NC}")" SOURCE_CONFIRM
+    # Если не нашли через монтирования, пробуем найти диск с корневой файловой системой
+    if [ -z "$SOURCE_DISK" ]; then
+        # Ищем диск, на котором есть файл /etc/openwrt_release
+        for disk in /sys/block/*; do
+            disk_name=$(basename "$disk")
+            case "$disk_name" in
+                loop*|ram*|sr*) continue ;;
+            esac
+            
+            # Проверяем первый раздел
+            if [ -b "/dev/${disk_name}1" ]; then
+                mkdir -p /mnt/check_source
+                if mount "/dev/${disk_name}1" /mnt/check_source 2>/dev/null; then
+                    if [ -f "/mnt/check_source/etc/openwrt_release" ] || [ -d "/mnt/check_source/rom" ]; then
+                        SOURCE_DISK="/dev/$disk_name"
+                        umount /mnt/check_source 2>/dev/null
+                        log "INFO" "Найден диск с OpenWRT через проверку: $SOURCE_DISK"
+                        break
+                    fi
+                    umount /mnt/check_source 2>/dev/null
+                fi
+            fi
+        done
+        rmdir /mnt/check_source 2>/dev/null
+    fi
+    
+    # Если нашли диск
+    if [ -n "$SOURCE_DISK" ]; then
+        # Получаем модель диска для красивого вывода
+        disk_name=$(basename "$SOURCE_DISK")
+        model=""
+        if [ -f "/sys/block/$disk_name/device/model" ]; then
+            model=$(cat "/sys/block/$disk_name/device/model")
         fi
         
-        if [ "$SOURCE_CONFIRM" = "y" ] || [ "$SOURCE_CONFIRM" = "Y" ]; then
-            SOURCE_DISK="$FOUND_SOURCE"
+        if [ "$LANG" = "ru" ]; then
+            echo -e "${GREEN}Найден диск с OpenWRT: $SOURCE_DISK $model${NC}"
+            echo -e "${YELLOW}Будет использован этот диск для копирования системы.${NC}"
+            read -p "$(echo -e "${YELLOW}Продолжить? (Y/n): ${NC}")" SOURCE_CONFIRM
+        else
+            echo -e "${GREEN}Found OpenWRT disk: $SOURCE_DISK $model${NC}"
+            echo -e "${YELLOW}This disk will be used as source for copying.${NC}"
+            read -p "$(echo -e "${YELLOW}Continue? (Y/n): ${NC}")" SOURCE_CONFIRM
+        fi
+        
+        # По умолчанию Y, если пользователь нажал Enter
+        if [ -z "$SOURCE_CONFIRM" ] || [ "$SOURCE_CONFIRM" = "y" ] || [ "$SOURCE_CONFIRM" = "Y" ]; then
             log "INFO" "Исходный диск подтверждён: $SOURCE_DISK"
             if [ "$LANG" = "ru" ]; then
                 echo -e "${GREEN}Исходный диск: $SOURCE_DISK${NC}\n"
@@ -418,37 +453,112 @@ find_source_disk() {
             return 0
         else
             if [ "$LANG" = "ru" ]; then
-                echo -e "${YELLOW}Поиск отменён. Укажите диск вручную.${NC}\n"
+                echo -e "${YELLOW}Операция отменена пользователем.${NC}"
             else
-                echo -e "${YELLOW}Cancelled. Please specify disk manually.${NC}\n"
+                echo -e "${YELLOW}Operation cancelled by user.${NC}"
             fi
+            exit 1
         fi
     fi
     
-    # Если не нашли или пользователь отказался
+    # Если не нашли автоматически, показываем список дисков для выбора
+    log "ERROR" "Не удалось автоматически найти исходный диск с OpenWRT"
+    
     if [ "$LANG" = "ru" ]; then
-        echo -e "${RED}Не удалось определить диск с OpenWRT или выбор отменён${NC}"
-        echo -e "${YELLOW}Укажите диск, с которого нужно скопировать систему${NC}"
-        echo -e "${YELLOW}(обычно это /dev/sda - USB-флешка)${NC}"
-        read -p "$(echo -e "${YELLOW}Введите диск (например, /dev/sda): ${NC}")" MANUAL_SOURCE
+        echo -e "\n${RED}Не удалось автоматически определить диск с OpenWRT${NC}"
+        echo -e "${YELLOW}Пожалуйста, выберите диск, с которого нужно скопировать систему:${NC}\n"
     else
-        echo -e "${RED}Could not detect OpenWRT disk or cancelled${NC}"
-        echo -e "${YELLOW}Specify the source disk to copy system from${NC}"
-        echo -e "${YELLOW}(usually /dev/sda - USB flash drive)${NC}"
-        read -p "$(echo -e "${YELLOW}Enter disk (e.g., /dev/sda): ${NC}")" MANUAL_SOURCE
+        echo -e "\n${RED}Could not automatically detect OpenWRT disk${NC}"
+        echo -e "${YELLOW}Please select the source disk to copy system from:${NC}\n"
     fi
     
-    if [ -b "$MANUAL_SOURCE" ]; then
-        SOURCE_DISK="$MANUAL_SOURCE"
-        log "INFO" "Исходный диск указан вручную: $SOURCE_DISK"
-        if [ "$LANG" = "ru" ]; then
-            echo -e "${GREEN}Исходный диск: $SOURCE_DISK${NC}\n"
-        else
-            echo -e "${GREEN}Source disk: $SOURCE_DISK${NC}\n"
+    # Получаем список всех дисков
+    SOURCE_DISKS=""
+    SOURCE_COUNT=0
+    
+    for disk in /sys/block/*; do
+        disk_name=$(basename "$disk")
+        case "$disk_name" in
+            loop*|ram*|sr*) continue ;;
+        esac
+        
+        # Пропускаем целевой диск
+        if [ "/dev/$disk_name" = "$TARGET_DISK" ]; then
+            continue
         fi
-        return 0
+        
+        # Получаем размер диска
+        if [ -f "$disk/size" ]; then
+            size_sectors=$(cat "$disk/size")
+            size_bytes=$((size_sectors * 512))
+            if command -v numfmt >/dev/null 2>&1; then
+                size_human=$(numfmt --to=iec "$size_bytes")
+            else
+                size_human="$size_bytes bytes"
+            fi
+        else
+            size_human="Unknown"
+        fi
+        
+        # Получаем модель диска
+        model=""
+        if [ -f "$disk/device/model" ]; then
+            model=$(cat "$disk/device/model")
+        fi
+        
+        SOURCE_COUNT=$((SOURCE_COUNT + 1))
+        SOURCE_DISKS="$SOURCE_DISKS /dev/$disk_name"
+        
+        echo "$SOURCE_COUNT) /dev/$disk_name - $model ($size_human)"
+    done
+    
+    if [ $SOURCE_COUNT -eq 0 ]; then
+        error_exit "No source disks found / Не найдено исходных дисков"
+    fi
+    
+    # Если только один вариант
+    if [ $SOURCE_COUNT -eq 1 ]; then
+        SOURCE_DISK=$(echo $SOURCE_DISKS | tr ' ' '\n' | sed -n "1p")
+        if [ "$LANG" = "ru" ]; then
+            echo -e "\n${GREEN}Найден единственный возможный диск: $SOURCE_DISK${NC}"
+            read -p "$(echo -e "${YELLOW}Использовать этот диск? (Y/n): ${NC}")" SOURCE_CONFIRM
+        else
+            echo -e "\n${GREEN}Found only possible disk: $SOURCE_DISK${NC}"
+            read -p "$(echo -e "${YELLOW}Use this disk? (Y/n): ${NC}")" SOURCE_CONFIRM
+        fi
+        
+        if [ -z "$SOURCE_CONFIRM" ] || [ "$SOURCE_CONFIRM" = "y" ] || [ "$SOURCE_CONFIRM" = "Y" ]; then
+            log "INFO" "Исходный диск выбран из единственного варианта: $SOURCE_DISK"
+            if [ "$LANG" = "ru" ]; then
+                echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}\n"
+            else
+                echo -e "${GREEN}Selected source disk: $SOURCE_DISK${NC}\n"
+            fi
+            return 0
+        else
+            error_exit "Operation cancelled / Операция отменена"
+        fi
+    fi
+    
+    # Если несколько вариантов - выбор по номеру
+    if [ "$LANG" = "ru" ]; then
+        echo -e "\n${YELLOW}Введите номер диска для копирования системы:${NC}"
     else
-        error_exit "Invalid disk / Неверный диск"
+        echo -e "\n${YELLOW}Enter source disk number:${NC}"
+    fi
+    read -p "> " SOURCE_NUM
+    
+    if ! echo "$SOURCE_NUM" | grep -qE '^[0-9]+$' || [ "$SOURCE_NUM" -lt 1 ] || [ "$SOURCE_NUM" -gt "$SOURCE_COUNT" ]; then
+        error_exit "Invalid disk number / Неверный номер диска"
+    fi
+    
+    SOURCE_DISK=$(echo $SOURCE_DISKS | tr ' ' '\n' | sed -n "${SOURCE_NUM}p")
+    log "INFO" "Исходный диск выбран вручную: $SOURCE_DISK"
+    
+    if [ "$LANG" = "ru" ]; then
+        echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}\n"
+    else
+        echo -e "${GREEN}Selected source disk: $SOURCE_DISK${NC}\n"
     fi
 }
 
@@ -607,9 +717,9 @@ copy_system() {
     log "INFO" "Копирование системы"
     
     if [ "$LANG" = "ru" ]; then
-        echo -e "${YELLOW}Копирование системы с USB на внутренний диск...${NC}"
+        echo -e "${YELLOW}Копирование системы с исходного диска на целевой...${NC}"
     else
-        echo -e "${YELLOW}Copying system from USB to internal disk...${NC}"
+        echo -e "${YELLOW}Copying system from source disk to target...${NC}"
     fi
     
     # Определяем исходные разделы
