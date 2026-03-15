@@ -371,6 +371,7 @@ find_source_disk() {
     SOURCE_DISK=""
     FOUND_COUNT=0
     FOUND_DISKS=""
+    FOUND_MODEL=""
     
     # Перебираем все диски
     for disk in /sys/block/*; do
@@ -394,10 +395,7 @@ find_source_disk() {
             model=$(cat "$disk/device/model")
         fi
         
-        echo -e "\n${YELLOW}Проверка диска $disk_dev $model...${NC}"
-        
         # Перебираем все разделы диска (до 8)
-        PART_FOUND=0
         for part_num in 1 2 3 4 5 6 7 8; do
             part_dev="${disk_dev}${part_num}"
             
@@ -406,7 +404,6 @@ find_source_disk() {
             fi
             
             log "INFO" "Проверка $part_dev на наличие OpenWRT"
-            echo -e "  ${YELLOW}Проверка раздела $part_dev...${NC}"
             
             # Пробуем примонтировать
             if mount "$part_dev" /mnt/scan_disk 2>/dev/null; then
@@ -476,35 +473,21 @@ find_source_disk() {
                 umount /mnt/scan_disk
                 
                 if [ $FOUND -eq 1 ]; then
-                    PART_FOUND=1
                     FOUND_COUNT=$((FOUND_COUNT + 1))
                     FOUND_DISKS="$FOUND_DISKS $disk_dev"
+                    FOUND_MODEL="$model"
                     
-                    if [ "$LANG" = "ru" ]; then
-                        echo -e "  ${GREEN}✓ $part_dev — обнаружена OpenWRT ($REASON)${NC}"
-                        echo -e "  ${GREEN}  → системный диск: $disk_dev $model${NC}"
-                    else
-                        echo -e "  ${GREEN}✓ $part_dev — OpenWRT found ($REASON)${NC}"
-                        echo -e "  ${GREEN}  → system disk: $disk_dev $model${NC}"
+                    # Запоминаем первый найденный диск (для случая одного диска)
+                    if [ $FOUND_COUNT -eq 1 ]; then
+                        FIRST_FOUND="$disk_dev"
+                        FIRST_MODEL="$model"
                     fi
-                    break  # Нашли OpenWRT на этом диске, переходим к следующему
-                else
-                    if [ "$LANG" = "ru" ]; then
-                        echo -e "  ${YELLOW}✗ $part_dev — есть раздел, но не OpenWRT${NC}"
-                    else
-                        echo -e "  ${YELLOW}✗ $part_dev — partition exists but not OpenWRT${NC}"
-                    fi
+                    
+                    # Переходим к следующему диску (не проверяем остальные разделы)
+                    break
                 fi
             fi
         done
-        
-        if [ $PART_FOUND -eq 0 ]; then
-            if [ "$LANG" = "ru" ]; then
-                echo -e "  ${YELLOW}→ На диске $disk_dev не найдено OpenWRT${NC}"
-            else
-                echo -e "  ${YELLOW}→ No OpenWRT found on $disk_dev${NC}"
-            fi
-        fi
     done
     
     # Удаляем временную директорию
@@ -609,12 +592,12 @@ find_source_disk() {
         
     elif [ $FOUND_COUNT -eq 1 ]; then
         # Нашли ровно один диск с OpenWRT
-        SOURCE_DISK=$(echo $FOUND_DISKS | tr ' ' '\n' | sed -n "1p")
+        SOURCE_DISK="$FIRST_FOUND"
         if [ "$LANG" = "ru" ]; then
-            echo -e "\n${GREEN}Найден диск с OpenWRT: $SOURCE_DISK${NC}"
+            echo -e "${GREEN}Найден диск с OpenWRT: $SOURCE_DISK $FIRST_MODEL${NC}"
             read -p "$(echo -e "${YELLOW}Копировать систему с этого диска? (Y/n): ${NC}")" SOURCE_CONFIRM
         else
-            echo -e "\n${GREEN}Found OpenWRT disk: $SOURCE_DISK${NC}"
+            echo -e "${GREEN}Found OpenWRT disk: $SOURCE_DISK $FIRST_MODEL${NC}"
             read -p "$(echo -e "${YELLOW}Copy system from this disk? (Y/n): ${NC}")" SOURCE_CONFIRM
         fi
         
@@ -1000,6 +983,24 @@ copy_system() {
         fi
     fi
     
+    # ========== ПОЛУЧЕНИЕ РАЗМЕРОВ ==========
+    get_size_human() {
+        local path="$1"
+        if command -v du >/dev/null 2>&1 && command -v numfmt >/dev/null 2>&1; then
+            local size_bytes=$(du -sb "$path" 2>/dev/null | cut -f1)
+            if [ -n "$size_bytes" ] && [ "$size_bytes" -gt 0 ]; then
+                numfmt --to=iec "$size_bytes"
+                return 0
+            fi
+        fi
+        echo "unknown"
+        return 1
+    }
+    
+    BOOT_SIZE=$(get_size_human "/mnt/source_boot")
+    DATA_SIZE=$(get_size_human "/mnt/source_data")
+    # ========== КОНЕЦ ПОЛУЧЕНИЯ РАЗМЕРОВ ==========
+    
     # Проверка размера boot раздела
     echo -e "\n${YELLOW}Проверка boot раздела...${NC}"
     check_disk_space "/mnt/source_boot" "/mnt/efi" "boot"
@@ -1017,9 +1018,9 @@ copy_system() {
     # Копирование boot раздела
     log "INFO" "Копирование boot раздела"
     if [ "$LANG" = "ru" ]; then
-        echo -e "\n${YELLOW}Копирование boot раздела...${NC}"
+        echo -e "\n${YELLOW}Копирование boot раздела (${BOOT_SIZE})...${NC}"
     else
-        echo -e "\n${YELLOW}Copying boot partition...${NC}"
+        echo -e "\n${YELLOW}Copying boot partition (${BOOT_SIZE})...${NC}"
     fi
     
     if command -v rsync >/dev/null 2>&1; then
@@ -1035,9 +1036,9 @@ copy_system() {
     # Копирование data раздела
     log "INFO" "Копирование data раздела"
     if [ "$LANG" = "ru" ]; then
-        echo -e "\n${YELLOW}Копирование data раздела...${NC}"
+        echo -e "\n${YELLOW}Копирование data раздела (${DATA_SIZE})...${NC}"
     else
-        echo -e "\n${YELLOW}Copying data partition...${NC}"
+        echo -e "\n${YELLOW}Copying data partition (${DATA_SIZE})...${NC}"
     fi
     
     if command -v rsync >/dev/null 2>&1; then
