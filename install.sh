@@ -175,8 +175,8 @@ install_packages() {
         return 1
     fi
     
-    # Список необходимых пакетов
-    PACKAGES="sfdisk dosfstools rsync blkid nano parted"
+    # Список необходимых пакетов (добавлен mount-utils для mountpoint)
+    PACKAGES="sfdisk dosfstools rsync blkid nano parted mount-utils"
     
     # Обновление списка пакетов
     log "INFO" "Обновление списка пакетов..."
@@ -352,7 +352,7 @@ select_target_disk() {
     log "INFO" "Финальное подтверждение получено, целевой диск: $TARGET_DISK"
 }
 
-# ========== НОВАЯ ФУНКЦИЯ: ПОИСК ИСХОДНОГО ДИСКА ПО СОДЕРЖИМОМУ ==========
+# ========== УЛУЧШЕННЫЙ ПОИСК ИСХОДНОГО ДИСКА ПО СОДЕРЖИМОМУ ==========
 find_source_disk() {
     log "INFO" "Поиск исходного диска с OpenWRT по содержимому"
     
@@ -368,8 +368,8 @@ find_source_disk() {
     mkdir -p /mnt/scan_disk
     
     SOURCE_DISK=""
-    SOURCE_DISKS_LIST=""
-    SOURCE_COUNT=0
+    FOUND_COUNT=0
+    FOUND_DISKS=""
     
     # Перебираем все диски
     for disk in /sys/block/*; do
@@ -394,48 +394,43 @@ find_source_disk() {
             # Пробуем примонтировать
             if mount "${disk_dev}1" /mnt/scan_disk 2>/dev/null; then
                 
-                # Ищем признаки OpenWRT в разных местах
                 FOUND=0
                 
-                # Признак 1: Файл openwrt_release
+                # Проверяем характерные для OpenWRT файлы
                 if [ -f "/mnt/scan_disk/etc/openwrt_release" ]; then
                     log "INFO" "Найден файл openwrt_release на ${disk_dev}1"
                     FOUND=1
-                fi
-                
-                # Признак 2: Директория /rom (характерно для OpenWRT)
-                if [ -d "/mnt/scan_disk/rom" ]; then
-                    log "INFO" "Найдена директория /rom на ${disk_dev}1"
+                elif [ -f "/mnt/scan_disk/etc/banner" ]; then
+                    log "INFO" "Найден файл banner на ${disk_dev}1"
                     FOUND=1
-                fi
-                
-                # Признак 3: Файл version в /etc (часто содержит OpenWRT)
-                if [ -f "/mnt/scan_disk/etc/version" ] && grep -q "OpenWrt" "/mnt/scan_disk/etc/version" 2>/dev/null; then
-                    log "INFO" "Найден OpenWRT в version на ${disk_dev}1"
-                    FOUND=1
-                fi
-                
-                # Признак 4: Наличие директории /bin/busybox (ядро OpenWRT)
-                if [ -f "/mnt/scan_disk/bin/busybox" ]; then
-                    log "INFO" "Найден busybox на ${disk_dev}1"
+                elif [ -d "/mnt/scan_disk/etc/opkg" ]; then
+                    log "INFO" "Найдена директория opkg на ${disk_dev}1"
                     FOUND=1
                 fi
                 
                 umount /mnt/scan_disk
                 
                 if [ $FOUND -eq 1 ]; then
-                    SOURCE_DISK="$disk_dev"
-                    SOURCE_COUNT=$((SOURCE_COUNT + 1))
-                    SOURCE_DISKS_LIST="$SOURCE_DISKS_LIST $disk_dev"
-                    log "INFO" "Диск $disk_dev содержит OpenWRT"
-                    
-                    # Получаем модель диска
+                    # Получаем модель диска для красивого вывода
                     model=""
                     if [ -f "$disk/device/model" ]; then
                         model=$(cat "$disk/device/model")
                     fi
                     
-                    echo "$SOURCE_COUNT) $disk_dev - $model [OpenWRT найден]"
+                    FOUND_COUNT=$((FOUND_COUNT + 1))
+                    FOUND_DISKS="$FOUND_DISKS $disk_dev"
+                    
+                    if [ "$LANG" = "ru" ]; then
+                        echo -e "${GREEN}$disk_dev — обнаружена OpenWRT (СИСТЕМНЫЙ ДИСК) $model${NC}"
+                    else
+                        echo -e "${GREEN}$disk_dev — OpenWRT found (SYSTEM DISK) $model${NC}"
+                    fi
+                else
+                    if [ "$LANG" = "ru" ]; then
+                        echo -e "${YELLOW}   $disk_dev — есть раздел, но не OpenWRT${NC}"
+                    else
+                        echo -e "${YELLOW}   $disk_dev — partition exists but not OpenWRT${NC}"
+                    fi
                 fi
             fi
         fi
@@ -445,7 +440,7 @@ find_source_disk() {
     rmdir /mnt/scan_disk 2>/dev/null
     
     # Анализируем результаты
-    if [ $SOURCE_COUNT -eq 0 ]; then
+    if [ $FOUND_COUNT -eq 0 ]; then
         # Если не нашли ни одного диска с OpenWRT
         log "ERROR" "Не найдено ни одного диска с OpenWRT"
         
@@ -461,7 +456,7 @@ find_source_disk() {
         
         # Показываем все диски для ручного выбора
         SOURCE_COUNT=0
-        SOURCE_DISKS_LIST=""
+        SOURCE_DISKS=""
         
         for disk in /sys/block/*; do
             disk_name=$(basename "$disk")
@@ -495,7 +490,7 @@ find_source_disk() {
             fi
             
             SOURCE_COUNT=$((SOURCE_COUNT + 1))
-            SOURCE_DISKS_LIST="$SOURCE_DISKS_LIST $disk_dev"
+            SOURCE_DISKS="$SOURCE_DISKS $disk_dev"
             
             echo "$SOURCE_COUNT) $disk_dev - $model ($size_human)"
         done
@@ -504,22 +499,44 @@ find_source_disk() {
             error_exit "No disks available / Нет доступных дисков"
         fi
         
-        if [ "$LANG" = "ru" ]; then
-            echo -e "\n${YELLOW}Введите номер диска, с которого нужно скопировать систему:${NC}"
+        if [ $SOURCE_COUNT -eq 1 ]; then
+            # Если только один вариант
+            SOURCE_DISK=$(echo $SOURCE_DISKS | tr ' ' '\n' | sed -n "1p")
+            if [ "$LANG" = "ru" ]; then
+                echo -e "\n${GREEN}Найден единственный возможный диск: $SOURCE_DISK${NC}"
+                read -p "$(echo -e "${YELLOW}Использовать этот диск? (Y/n): ${NC}")" SOURCE_CONFIRM
+            else
+                echo -e "\n${GREEN}Found only possible disk: $SOURCE_DISK${NC}"
+                read -p "$(echo -e "${YELLOW}Use this disk? (Y/n): ${NC}")" SOURCE_CONFIRM
+            fi
+            
+            if [ -z "$SOURCE_CONFIRM" ] || [ "$SOURCE_CONFIRM" = "y" ] || [ "$SOURCE_CONFIRM" = "Y" ]; then
+                log "INFO" "Исходный диск выбран из единственного варианта: $SOURCE_DISK"
+                echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}\n"
+            else
+                error_exit "Operation cancelled / Операция отменена"
+            fi
         else
-            echo -e "\n${YELLOW}Enter source disk number:${NC}"
+            # Если несколько вариантов - выбор по номеру
+            if [ "$LANG" = "ru" ]; then
+                echo -e "\n${YELLOW}Введите номер диска для копирования системы:${NC}"
+            else
+                echo -e "\n${YELLOW}Enter source disk number:${NC}"
+            fi
+            read -p "> " SOURCE_NUM
+            
+            if ! echo "$SOURCE_NUM" | grep -qE '^[0-9]+$' || [ "$SOURCE_NUM" -lt 1 ] || [ "$SOURCE_NUM" -gt "$SOURCE_COUNT" ]; then
+                error_exit "Invalid disk number / Неверный номер диска"
+            fi
+            
+            SOURCE_DISK=$(echo $SOURCE_DISKS | tr ' ' '\n' | sed -n "${SOURCE_NUM}p")
+            log "INFO" "Исходный диск выбран вручную: $SOURCE_DISK"
+            echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}\n"
         fi
-        read -p "> " SOURCE_NUM
         
-        if ! echo "$SOURCE_NUM" | grep -qE '^[0-9]+$' || [ "$SOURCE_NUM" -lt 1 ] || [ "$SOURCE_NUM" -gt "$SOURCE_COUNT" ]; then
-            error_exit "Invalid disk number / Неверный номер диска"
-        fi
-        
-        SOURCE_DISK=$(echo $SOURCE_DISKS_LIST | tr ' ' '\n' | sed -n "${SOURCE_NUM}p")
-        log "INFO" "Исходный диск выбран вручную: $SOURCE_DISK"
-        
-    elif [ $SOURCE_COUNT -eq 1 ]; then
+    elif [ $FOUND_COUNT -eq 1 ]; then
         # Нашли ровно один диск с OpenWRT
+        SOURCE_DISK=$(echo $FOUND_DISKS | tr ' ' '\n' | sed -n "1p")
         if [ "$LANG" = "ru" ]; then
             echo -e "\n${GREEN}Найден диск с OpenWRT: $SOURCE_DISK${NC}"
             read -p "$(echo -e "${YELLOW}Копировать систему с этого диска? (Y/n): ${NC}")" SOURCE_CONFIRM
@@ -530,12 +547,13 @@ find_source_disk() {
         
         if [ -z "$SOURCE_CONFIRM" ] || [ "$SOURCE_CONFIRM" = "y" ] || [ "$SOURCE_CONFIRM" = "Y" ]; then
             log "INFO" "Исходный диск подтверждён: $SOURCE_DISK"
+            echo -e "${GREEN}Исходный диск: $SOURCE_DISK${NC}\n"
         else
             error_exit "Operation cancelled / Операция отменена"
         fi
         
     else
-        # Нашли несколько дисков с OpenWRT (редкий случай)
+        # Нашли несколько дисков с OpenWRT
         if [ "$LANG" = "ru" ]; then
             echo -e "\n${YELLOW}Найдено несколько дисков с OpenWRT:${NC}"
             echo -e "${YELLOW}Выберите нужный:${NC}\n"
@@ -546,7 +564,7 @@ find_source_disk() {
         
         # Выводим список найденных дисков
         DISK_NUM=1
-        for disk in $SOURCE_DISKS_LIST; do
+        for disk in $FOUND_DISKS; do
             disk_name=$(basename "$disk")
             model=""
             if [ -f "/sys/block/$disk_name/device/model" ]; then
@@ -558,18 +576,13 @@ find_source_disk() {
         
         read -p "$(echo -e "${YELLOW}Enter number / Введите номер: ${NC}")" SOURCE_NUM
         
-        if ! echo "$SOURCE_NUM" | grep -qE '^[0-9]+$' || [ "$SOURCE_NUM" -lt 1 ] || [ "$SOURCE_NUM" -gt "$SOURCE_COUNT" ]; then
+        if ! echo "$SOURCE_NUM" | grep -qE '^[0-9]+$' || [ "$SOURCE_NUM" -lt 1 ] || [ "$SOURCE_NUM" -gt "$FOUND_COUNT" ]; then
             error_exit "Invalid number / Неверный номер"
         fi
         
-        SOURCE_DISK=$(echo $SOURCE_DISKS_LIST | tr ' ' '\n' | sed -n "${SOURCE_NUM}p")
+        SOURCE_DISK=$(echo $FOUND_DISKS | tr ' ' '\n' | sed -n "${SOURCE_NUM}p")
         log "INFO" "Исходный диск выбран из нескольких: $SOURCE_DISK"
-    fi
-    
-    if [ "$LANG" = "ru" ]; then
-        echo -e "${GREEN}Исходный диск: $SOURCE_DISK${NC}\n"
-    else
-        echo -e "${GREEN}Source disk: $SOURCE_DISK${NC}\n"
+        echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}\n"
     fi
 }
 
@@ -673,6 +686,14 @@ format_partitions() {
         echo -e "${YELLOW}Formatting partitions...${NC}"
     fi
     
+    # Проверяем, не примонтированы ли разделы
+    if mount | grep -q "$EFI_PART"; then
+        umount "$EFI_PART" 2>/dev/null
+    fi
+    if mount | grep -q "$DATA_PART"; then
+        umount "$DATA_PART" 2>/dev/null
+    fi
+    
     # Определяем доступную команду для FAT
     FAT_CMD=""
     if command -v mkfs.fat >/dev/null 2>&1; then
@@ -751,6 +772,26 @@ mount_partitions() {
     fi
 }
 
+# ========== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ПРОВЕРКИ МОНТИРОВАНИЯ ==========
+# Проверяет, примонтирована ли директория (работает и с mountpoint, и без)
+is_mounted() {
+    local dir="$1"
+    
+    # Если есть команда mountpoint - используем её
+    if command -v mountpoint >/dev/null 2>&1; then
+        mountpoint -q "$dir" 2>/dev/null
+        return $?
+    fi
+    
+    # Если нет mountpoint - проверяем через /proc/mounts
+    if grep -q " $dir " /proc/mounts 2>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+# ========== КОНЕЦ УНИВЕРСАЛЬНОЙ ФУНКЦИИ ==========
+
 # Копирование системы
 copy_system() {
     log "INFO" "Копирование системы"
@@ -773,22 +814,46 @@ copy_system() {
         error_exit "Source data partition not found: $SOURCE_DATA / Исходный data раздел не найден"
     fi
     
-    # Монтируем исходные разделы (если не смонтированы)
+    # Создаем точки монтирования
     mkdir -p /mnt/source_boot /mnt/source_data
     
-    if ! mountpoint -q /mnt/source_boot; then
+    # Проверяем, не примонтированы ли уже разделы
+    BOOT_MOUNTED=0
+    DATA_MOUNTED=0
+    
+    if is_mounted "/mnt/source_boot"; then
+        log "INFO" "Boot раздел уже примонтирован в /mnt/source_boot"
+        BOOT_MOUNTED=1
+    else
+        log "INFO" "Монтирование $SOURCE_BOOT в /mnt/source_boot"
         mount "$SOURCE_BOOT" /mnt/source_boot >> "$LOG_FILE" 2>&1
         if [ $? -ne 0 ]; then
             error_exit "Failed to mount source boot partition / Не удалось примонтировать исходный boot раздел"
         fi
     fi
     
-    if ! mountpoint -q /mnt/source_data; then
+    if is_mounted "/mnt/source_data"; then
+        log "INFO" "Data раздел уже примонтирован в /mnt/source_data"
+        DATA_MOUNTED=1
+    else
+        log "INFO" "Монтирование $SOURCE_DATA в /mnt/source_data"
         mount "$SOURCE_DATA" /mnt/source_data >> "$LOG_FILE" 2>&1
         if [ $? -ne 0 ]; then
-            umount /mnt/source_boot 2>/dev/null
+            # Если не удалось примонтировать data, размонтируем boot если мы его монтировали
+            if [ $BOOT_MOUNTED -eq 0 ]; then
+                umount /mnt/source_boot 2>/dev/null
+            fi
             error_exit "Failed to mount source data partition / Не удалось примонтировать исходный data раздел"
         fi
+    fi
+    
+    # Проверка, что директории не пусты
+    if [ -z "$(ls -A /mnt/source_boot 2>/dev/null)" ]; then
+        error_exit "Source boot directory is empty / Исходная boot директория пуста"
+    fi
+    
+    if [ -z "$(ls -A /mnt/source_data 2>/dev/null)" ]; then
+        error_exit "Source data directory is empty / Исходная data директория пуста"
     fi
     
     # Копирование boot раздела
@@ -834,9 +899,15 @@ copy_system() {
         echo -e "${GREEN}Copying completed${NC}"
     fi
     
-    # Размонтирование исходных разделов
-    umount /mnt/source_boot 2>/dev/null
-    umount /mnt/source_data 2>/dev/null
+    # Размонтирование исходных разделов (только если мы их монтировали)
+    if [ $BOOT_MOUNTED -eq 0 ]; then
+        umount /mnt/source_boot 2>/dev/null
+    fi
+    if [ $DATA_MOUNTED -eq 0 ]; then
+        umount /mnt/source_data 2>/dev/null
+    fi
+    
+    # Удаляем директории, если они пусты
     rmdir /mnt/source_boot /mnt/source_data 2>/dev/null
 }
 
