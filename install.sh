@@ -175,7 +175,7 @@ install_packages() {
         return 1
     fi
     
-    # Список необходимых пакетов (добавлен mount-utils для mountpoint)
+    # Список необходимых пакетов
     PACKAGES="sfdisk dosfstools rsync blkid nano parted mount-utils"
     
     # Обновление списка пакетов
@@ -387,57 +387,129 @@ find_source_disk() {
             continue
         fi
         
-        # Проверяем первый раздел диска (обычно boot)
-        if [ -b "${disk_dev}1" ]; then
-            log "INFO" "Проверка ${disk_dev}1 на наличие OpenWRT"
+        # Получаем модель диска для красивого вывода
+        model=""
+        if [ -f "$disk/device/model" ]; then
+            model=$(cat "$disk/device/model")
+        fi
+        
+        echo -e "\n${YELLOW}Проверка диска $disk_dev $model...${NC}"
+        
+        # Перебираем все разделы диска (до 8)
+        PART_FOUND=0
+        for part_num in 1 2 3 4 5 6 7 8; do
+            part_dev="${disk_dev}${part_num}"
+            
+            if [ ! -b "$part_dev" ]; then
+                continue
+            fi
+            
+            log "INFO" "Проверка $part_dev на наличие OpenWRT"
+            echo -e "  ${YELLOW}Проверка раздела $part_dev...${NC}"
             
             # Пробуем примонтировать
-            if mount "${disk_dev}1" /mnt/scan_disk 2>/dev/null; then
+            if mount "$part_dev" /mnt/scan_disk 2>/dev/null; then
                 
                 FOUND=0
+                REASON=""
                 
-                # Проверяем характерные для OpenWRT файлы
+                # ========== ПРОВЕРКА ПРИЗНАКОВ OPENWRT ==========
+                
+                # Основной признак - openwrt_release
                 if [ -f "/mnt/scan_disk/etc/openwrt_release" ]; then
-                    log "INFO" "Найден файл openwrt_release на ${disk_dev}1"
                     FOUND=1
-                elif [ -f "/mnt/scan_disk/etc/banner" ]; then
-                    log "INFO" "Найден файл banner на ${disk_dev}1"
+                    REASON="openwrt_release"
+                
+                # Файл os-release с ID=openwrt
+                elif [ -f "/mnt/scan_disk/etc/os-release" ] && grep -q "^ID=openwrt" "/mnt/scan_disk/etc/os-release" 2>/dev/null; then
                     FOUND=1
+                    REASON="os-release (ID=openwrt)"
+                
+                # Файл os-release с NAME=OpenWrt
+                elif [ -f "/mnt/scan_disk/etc/os-release" ] && grep -q "^NAME=.*OpenWrt" "/mnt/scan_disk/etc/os-release" 2>/dev/null; then
+                    FOUND=1
+                    REASON="os-release (NAME=OpenWrt)"
+                
+                # Файл banner с текстом OpenWrt
+                elif [ -f "/mnt/scan_disk/etc/banner" ] && grep -q "OpenWrt" "/mnt/scan_disk/etc/banner" 2>/dev/null; then
+                    FOUND=1
+                    REASON="banner (OpenWrt)"
+                
+                # Новый пакетный менеджер apk
+                elif [ -d "/mnt/scan_disk/etc/apk" ]; then
+                    FOUND=1
+                    REASON="apk directory"
+                
+                # Старый пакетный менеджер opkg
                 elif [ -d "/mnt/scan_disk/etc/opkg" ]; then
-                    log "INFO" "Найдена директория opkg на ${disk_dev}1"
                     FOUND=1
+                    REASON="opkg directory"
+                
+                # Старая версия opkg в lib
+                elif [ -d "/mnt/scan_disk/lib/opkg" ]; then
+                    FOUND=1
+                    REASON="lib/opkg directory"
+                
+                # Файл version с текстом OpenWrt
+                elif [ -f "/mnt/scan_disk/etc/version" ] && grep -q "OpenWrt" "/mnt/scan_disk/etc/version" 2>/dev/null; then
+                    FOUND=1
+                    REASON="version file"
+                
+                # Директория /rom (характерно для OpenWRT)
+                elif [ -d "/mnt/scan_disk/rom" ]; then
+                    FOUND=1
+                    REASON="/rom directory"
+                
+                # Наличие busybox (запасной вариант)
+                elif [ -f "/mnt/scan_disk/bin/busybox" ]; then
+                    # Дополнительная проверка: если нет признаков других дистрибутивов
+                    if [ ! -f "/mnt/scan_disk/etc/debian_version" ] && \
+                       [ ! -f "/mnt/scan_disk/etc/redhat-release" ] && \
+                       [ ! -f "/mnt/scan_disk/etc/arch-release" ]; then
+                        FOUND=1
+                        REASON="busybox (embedded)"
+                    fi
                 fi
+                # ========== КОНЕЦ ПРОВЕРКИ ==========
                 
                 umount /mnt/scan_disk
                 
                 if [ $FOUND -eq 1 ]; then
-                    # Получаем модель диска для красивого вывода
-                    model=""
-                    if [ -f "$disk/device/model" ]; then
-                        model=$(cat "$disk/device/model")
-                    fi
-                    
+                    PART_FOUND=1
                     FOUND_COUNT=$((FOUND_COUNT + 1))
                     FOUND_DISKS="$FOUND_DISKS $disk_dev"
                     
                     if [ "$LANG" = "ru" ]; then
-                        echo -e "${GREEN}$disk_dev — обнаружена OpenWRT (СИСТЕМНЫЙ ДИСК) $model${NC}"
+                        echo -e "  ${GREEN}✓ $part_dev — обнаружена OpenWRT ($REASON)${NC}"
+                        echo -e "  ${GREEN}  → системный диск: $disk_dev $model${NC}"
                     else
-                        echo -e "${GREEN}$disk_dev — OpenWRT found (SYSTEM DISK) $model${NC}"
+                        echo -e "  ${GREEN}✓ $part_dev — OpenWRT found ($REASON)${NC}"
+                        echo -e "  ${GREEN}  → system disk: $disk_dev $model${NC}"
                     fi
+                    break  # Нашли OpenWRT на этом диске, переходим к следующему
                 else
                     if [ "$LANG" = "ru" ]; then
-                        echo -e "${YELLOW}   $disk_dev — есть раздел, но не OpenWRT${NC}"
+                        echo -e "  ${YELLOW}✗ $part_dev — есть раздел, но не OpenWRT${NC}"
                     else
-                        echo -e "${YELLOW}   $disk_dev — partition exists but not OpenWRT${NC}"
+                        echo -e "  ${YELLOW}✗ $part_dev — partition exists but not OpenWRT${NC}"
                     fi
                 fi
+            fi
+        done
+        
+        if [ $PART_FOUND -eq 0 ]; then
+            if [ "$LANG" = "ru" ]; then
+                echo -e "  ${YELLOW}→ На диске $disk_dev не найдено OpenWRT${NC}"
+            else
+                echo -e "  ${YELLOW}→ No OpenWRT found on $disk_dev${NC}"
             fi
         fi
     done
     
     # Удаляем временную директорию
     rmdir /mnt/scan_disk 2>/dev/null
+    
+    echo ""
     
     # Анализируем результаты
     if [ $FOUND_COUNT -eq 0 ]; then
@@ -773,7 +845,6 @@ mount_partitions() {
 }
 
 # ========== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ПРОВЕРКИ МОНТИРОВАНИЯ ==========
-# Проверяет, примонтирована ли директория (работает и с mountpoint, и без)
 is_mounted() {
     local dir="$1"
     
