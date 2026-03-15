@@ -12,6 +12,19 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# ========== ОБРАБОТКА ПРЕРЫВАНИЙ ==========
+cleanup_on_exit() {
+    echo -e "\n${YELLOW}Прерывание! Выполняю очистку...${NC}"
+    umount /mnt/efi 2>/dev/null
+    umount /mnt/data 2>/dev/null
+    umount /mnt/source_boot 2>/dev/null
+    umount /mnt/source_data 2>/dev/null
+    log "INFO" "Скрипт прерван пользователем"
+    exit 1
+}
+
+trap cleanup_on_exit INT TERM
+
 # ========== ПЕРЕМЕННЫЕ ==========
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 LOG_DIR="/tmp/openwrt_installer"
@@ -162,7 +175,7 @@ install_packages() {
     fi
     
     # Список необходимых пакетов
-    PACKAGES="sfdisk dosfstools rsync blkid nano"
+    PACKAGES="sfdisk dosfstools rsync blkid nano parted"
     
     # Обновление списка пакетов
     log "INFO" "Обновление списка пакетов..."
@@ -209,18 +222,36 @@ install_packages() {
     fi
 }
 
-# Выбор целевого диска
+# Проверка наличия необходимых команд
+check_required_commands() {
+    local missing=""
+    
+    if ! command -v sfdisk >/dev/null 2>&1; then
+        missing="$missing sfdisk"
+    fi
+    if ! command -v mkfs.ext4 >/dev/null 2>&1; then
+        missing="$missing mkfs.ext4"
+    fi
+    
+    if [ -n "$missing" ]; then
+        error_exit "Missing required commands:$missing / Отсутствуют необходимые команды:$missing"
+    fi
+}
+
+# ========== ВЫБОР ЦЕЛЕВОГО ДИСКА (КУДА УСТАНАВЛИВАТЬ) ==========
 select_target_disk() {
-    log "INFO" "Выбор целевого диска"
+    log "INFO" "Выбор целевого диска для установки"
     
     if [ "$LANG" = "ru" ]; then
-        echo -e "${YELLOW}Доступные диски:${NC}"
+        echo -e "\n${YELLOW}=== ВЫБЕРИТЕ ДИСК, КУДА БУДЕТ УСТАНОВЛЕНА СИСТЕМА ===${NC}"
+        echo -e "${RED}ВНИМАНИЕ: Все данные на этом диске будут уничтожены!${NC}\n"
     else
-        echo -e "${YELLOW}Available disks:${NC}"
+        echo -e "\n${YELLOW}=== SELECT TARGET DISK FOR INSTALLATION ===${NC}"
+        echo -e "${RED}WARNING: All data on this disk will be destroyed!${NC}\n"
     fi
     
     # Получаем список дисков через /sys/block
-    DISKS=""
+    DISK_LIST=""
     DISK_COUNT=0
     
     for disk in /sys/block/*; do
@@ -249,9 +280,18 @@ select_target_disk() {
             model=$(cat "$disk/device/model")
         fi
         
-        DISK_COUNT=$((DISK_COUNT + 1))
+        # Проверяем, не является ли диск съёмным
+        removable=""
+        if [ -f "$disk/removable" ]; then
+            if [ "$(cat "$disk/removable")" = "1" ]; then
+                removable=" [USB]"
+            fi
+        fi
         
-        echo "$DISK_COUNT) /dev/$disk_name - $model ($size_human)"
+        DISK_COUNT=$((DISK_COUNT + 1))
+        DISK_LIST="$DISK_LIST $disk_name"
+        
+        echo "$DISK_COUNT) /dev/$disk_name - $model ($size_human)$removable"
     done
     
     if [ $DISK_COUNT -eq 0 ]; then
@@ -259,7 +299,12 @@ select_target_disk() {
     fi
     
     # Выбор диска
-    read -p "$(echo -e "${YELLOW}Enter disk number / Введите номер диска: ${NC}")" DISK_NUM
+    if [ "$LANG" = "ru" ]; then
+        echo -e "\n${YELLOW}Введите номер диска для установки OpenWRT:${NC}"
+    else
+        echo -e "\n${YELLOW}Enter disk number for OpenWRT installation:${NC}"
+    fi
+    read -p "> " DISK_NUM
     
     # Проверка ввода
     if ! echo "$DISK_NUM" | grep -qE '^[0-9]+$' || [ "$DISK_NUM" -lt 1 ] || [ "$DISK_NUM" -gt "$DISK_COUNT" ]; then
@@ -267,26 +312,36 @@ select_target_disk() {
     fi
     
     # Получаем выбранный диск
-    SELECTED_DISK="/dev/$(ls /sys/block | grep -v loop | grep -v ram | grep -v sr | sed -n "${DISK_NUM}p")"
+    SELECTED_DISK="/dev/$(echo $DISK_LIST | cut -d' ' -f $DISK_NUM)"
     
     if [ "$LANG" = "ru" ]; then
-        echo -e "${YELLOW}Выбран диск: ${RED}${SELECTED_DISK}${NC}"
+        echo -e "${YELLOW}Выбран диск для установки: ${RED}${SELECTED_DISK}${NC}"
     else
-        echo -e "${YELLOW}Selected disk: ${RED}${SELECTED_DISK}${NC}"
+        echo -e "${YELLOW}Selected target disk: ${RED}${SELECTED_DISK}${NC}"
     fi
     
-    log "INFO" "Выбран диск: $SELECTED_DISK"
+    log "INFO" "Выбран целевой диск: $SELECTED_DISK"
     
     # Подтверждение
-    read -p "$(echo -e "${YELLOW}Confirm selection? / Подтвердить выбор? (y/N): ${NC}")" CONFIRM
+    if [ "$LANG" = "ru" ]; then
+        read -p "$(echo -e "${YELLOW}Установить OpenWRT на этот диск? (y/N): ${NC}")" CONFIRM
+    else
+        read -p "$(echo -e "${YELLOW}Install OpenWRT on this disk? (y/N): ${NC}")" CONFIRM
+    fi
+    
     if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
         error_exit "Operation cancelled / Операция отменена"
     fi
     
     # Финальное предупреждение
-    echo -e "${RED}WARNING: ALL DATA ON $SELECTED_DISK WILL BE DESTROYED!${NC}"
-    echo -e "${RED}ПРЕДУПРЕЖДЕНИЕ: ВСЕ ДАННЫЕ НА $SELECTED_DISK БУДУТ УНИЧТОЖЕНЫ!${NC}"
-    read -p "$(echo -e "${RED}Type 'yes' to continue / Введите 'yes' для продолжения: ${NC}")" FINAL_CONFIRM
+    echo -e "\n${RED}WARNING: ALL DATA ON $SELECTED_DISK WILL BE DESTROYED!${NC}"
+    echo -e "${RED}ПРЕДУПРЕЖДЕНИЕ: ВСЕ ДАННЫЕ НА $SELECTED_DISK БУДУТ УНИЧТОЖЕНЫ!${NC}\n"
+    
+    if [ "$LANG" = "ru" ]; then
+        read -p "$(echo -e "${RED}Введите 'yes' для подтверждения форматирования: ${NC}")" FINAL_CONFIRM
+    else
+        read -p "$(echo -e "${RED}Type 'yes' to confirm formatting: ${NC}")" FINAL_CONFIRM
+    fi
     
     if [ "$FINAL_CONFIRM" != "yes" ]; then
         error_exit "Operation cancelled / Операция отменена"
@@ -296,14 +351,16 @@ select_target_disk() {
     log "INFO" "Финальное подтверждение получено, целевой диск: $TARGET_DISK"
 }
 
-# Определение исходного диска (USB с OpenWRT)
+# ========== ОПРЕДЕЛЕНИЕ ИСХОДНОГО ДИСКА (ОТКУДА КОПИРОВАТЬ) ==========
 find_source_disk() {
-    log "INFO" "Поиск исходного диска (USB с OpenWRT)"
+    log "INFO" "Поиск исходного диска с OpenWRT"
     
     if [ "$LANG" = "ru" ]; then
-        echo -e "${YELLOW}Поиск исходного USB-диска с OpenWRT...${NC}"
+        echo -e "\n${YELLOW}=== ПОИСК ИСХОДНОГО ДИСКА С OpenWRT ===${NC}"
+        echo -e "${YELLOW}Определяем, с какого диска загружена система...${NC}\n"
     else
-        echo -e "${YELLOW}Looking for source USB disk with OpenWRT...${NC}"
+        echo -e "\n${YELLOW}=== LOOKING FOR SOURCE DISK WITH OpenWRT ===${NC}"
+        echo -e "${YELLOW}Detecting boot disk...${NC}\n"
     fi
     
     # Ищем смонтированные разделы с boot и root
@@ -326,40 +383,79 @@ find_source_disk() {
         esac
     done < /proc/mounts
     
+    FOUND_SOURCE=""
+    
     if [ -n "$BOOT_PART" ] && [ -n "$ROOT_PART" ]; then
         # Извлекаем имя диска из разделов
         BOOT_DISK=$(echo "$BOOT_PART" | sed 's/[0-9]*$//')
         ROOT_DISK=$(echo "$ROOT_PART" | sed 's/[0-9]*$//')
         
         if [ "$BOOT_DISK" = "$ROOT_DISK" ]; then
-            SOURCE_DISK="$BOOT_DISK"
-            log "INFO" "Найден исходный диск: $SOURCE_DISK"
-            if [ "$LANG" = "ru" ]; then
-                echo -e "${GREEN}Найден исходный диск: $SOURCE_DISK${NC}"
-            else
-                echo -e "${GREEN}Found source disk: $SOURCE_DISK${NC}"
-            fi
-            return 0
+            FOUND_SOURCE="$BOOT_DISK"
+            log "INFO" "Найден предполагаемый исходный диск: $FOUND_SOURCE"
         fi
     fi
     
-    log "ERROR" "Не удалось найти исходный USB-диск с OpenWRT"
-    if [ "$LANG" = "ru" ]; then
-        echo -e "${RED}Не удалось найти исходный USB-диск с OpenWRT${NC}"
-        echo -e "${YELLOW}Убедитесь, что вы загрузились с USB-флешки${NC}"
-    else
-        echo -e "${RED}Failed to find source USB disk with OpenWRT${NC}"
-        echo -e "${YELLOW}Make sure you booted from USB flash drive${NC}"
+    if [ -n "$FOUND_SOURCE" ]; then
+        if [ "$LANG" = "ru" ]; then
+            echo -e "${GREEN}Найден диск с OpenWRT: $FOUND_SOURCE${NC}"
+            echo -e "${YELLOW}Копируем систему с этого диска?${NC}"
+            read -p "$(echo -e "${YELLOW}(y/N): ${NC}")" SOURCE_CONFIRM
+        else
+            echo -e "${GREEN}Found OpenWRT disk: $FOUND_SOURCE${NC}"
+            echo -e "${YELLOW}Copy system from this disk?${NC}"
+            read -p "$(echo -e "${YELLOW}(y/N): ${NC}")" SOURCE_CONFIRM
+        fi
+        
+        if [ "$SOURCE_CONFIRM" = "y" ] || [ "$SOURCE_CONFIRM" = "Y" ]; then
+            SOURCE_DISK="$FOUND_SOURCE"
+            log "INFO" "Исходный диск подтверждён: $SOURCE_DISK"
+            if [ "$LANG" = "ru" ]; then
+                echo -e "${GREEN}Исходный диск: $SOURCE_DISK${NC}\n"
+            else
+                echo -e "${GREEN}Source disk: $SOURCE_DISK${NC}\n"
+            fi
+            return 0
+        else
+            if [ "$LANG" = "ru" ]; then
+                echo -e "${YELLOW}Поиск отменён. Укажите диск вручную.${NC}\n"
+            else
+                echo -e "${YELLOW}Cancelled. Please specify disk manually.${NC}\n"
+            fi
+        fi
     fi
     
-    read -p "$(echo -e "${YELLOW}Enter source disk manually / Введите исходный диск вручную (e.g., /dev/sda): ${NC}")" MANUAL_SOURCE
+    # Если не нашли или пользователь отказался
+    if [ "$LANG" = "ru" ]; then
+        echo -e "${RED}Не удалось определить диск с OpenWRT или выбор отменён${NC}"
+        echo -e "${YELLOW}Укажите диск, с которого нужно скопировать систему${NC}"
+        echo -e "${YELLOW}(обычно это /dev/sda - USB-флешка)${NC}"
+        read -p "$(echo -e "${YELLOW}Введите диск (например, /dev/sda): ${NC}")" MANUAL_SOURCE
+    else
+        echo -e "${RED}Could not detect OpenWRT disk or cancelled${NC}"
+        echo -e "${YELLOW}Specify the source disk to copy system from${NC}"
+        echo -e "${YELLOW}(usually /dev/sda - USB flash drive)${NC}"
+        read -p "$(echo -e "${YELLOW}Enter disk (e.g., /dev/sda): ${NC}")" MANUAL_SOURCE
+    fi
     
     if [ -b "$MANUAL_SOURCE" ]; then
         SOURCE_DISK="$MANUAL_SOURCE"
         log "INFO" "Исходный диск указан вручную: $SOURCE_DISK"
+        if [ "$LANG" = "ru" ]; then
+            echo -e "${GREEN}Исходный диск: $SOURCE_DISK${NC}\n"
+        else
+            echo -e "${GREEN}Source disk: $SOURCE_DISK${NC}\n"
+        fi
         return 0
     else
         error_exit "Invalid disk / Неверный диск"
+    fi
+}
+
+# ========== ПРОВЕРКА, ЧТО ДИСКИ РАЗНЫЕ ==========
+check_disks_different() {
+    if [ "$TARGET_DISK" = "$SOURCE_DISK" ]; then
+        error_exit "Target disk is the same as source disk! / Целевой диск совпадает с исходным!"
     fi
 }
 
@@ -380,8 +476,8 @@ create_partitions() {
     # Создание разделов через sfdisk
     echo "label: gpt" | sfdisk "$TARGET_DISK" >> "$LOG_FILE" 2>&1
     
-    # Создание EFI раздела (256 MB)
-    echo "size=256M, type=U, name=\"EFI\"" | sfdisk -a "$TARGET_DISK" >> "$LOG_FILE" 2>&1
+    # Создание EFI раздела (256 MB) с правильным типом для UEFI
+    echo "size=256M, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=\"EFI\"" | sfdisk -a "$TARGET_DISK" >> "$LOG_FILE" 2>&1
     
     # Создание DATA раздела на остатке
     echo "type=L, name=\"DATA\"" | sfdisk -a "$TARGET_DISK" >> "$LOG_FILE" 2>&1
@@ -401,16 +497,16 @@ create_partitions() {
     
     if [ "$LANG" = "ru" ]; then
         echo -e "${GREEN}Разделы созданы:${NC}"
-        echo "  EFI: $EFI_PART (256 MB)"
+        echo "  EFI: $EFI_PART (256 MB, тип: EFI System)"
         echo "  DATA: $DATA_PART (остаток)"
     else
         echo -e "${GREEN}Partitions created:${NC}"
-        echo "  EFI: $EFI_PART (256 MB)"
+        echo "  EFI: $EFI_PART (256 MB, type: EFI System)"
         echo "  DATA: $DATA_PART (remaining)"
     fi
 }
 
-# ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ ФОРМАТИРОВАНИЯ ==========
+# ========== ФОРМАТИРОВАНИЕ РАЗДЕЛОВ ==========
 format_partitions() {
     log "INFO" "Форматирование разделов"
     
@@ -418,6 +514,14 @@ format_partitions() {
         echo -e "${YELLOW}Форматирование разделов...${NC}"
     else
         echo -e "${YELLOW}Formatting partitions...${NC}"
+    fi
+    
+    # Проверяем, не примонтированы ли разделы
+    if mount | grep -q "$EFI_PART"; then
+        umount "$EFI_PART" 2>/dev/null
+    fi
+    if mount | grep -q "$DATA_PART"; then
+        umount "$DATA_PART" 2>/dev/null
     fi
     
     # Определяем доступную команду для FAT
@@ -444,6 +548,12 @@ format_partitions() {
         error_exit "Failed to format EFI partition / Не удалось отформатировать EFI раздел"
     fi
     
+    # Установка флага ESP (хотя при создании мы уже задали правильный тип)
+    if command -v parted >/dev/null 2>&1; then
+        log "INFO" "Установка флага esp on через parted"
+        parted "$TARGET_DISK" set 1 esp on >> "$LOG_FILE" 2>&1
+    fi
+    
     # Форматирование DATA в ext4
     log "INFO" "Форматирование $DATA_PART в ext4"
     mkfs.ext4 -F -L "DATA" "$DATA_PART" >> "$LOG_FILE" 2>&1
@@ -457,7 +567,6 @@ format_partitions() {
         echo -e "${GREEN}Formatting completed${NC}"
     fi
 }
-# ========== КОНЕЦ ИСПРАВЛЕННОЙ ФУНКЦИИ ==========
 
 # Монтирование разделов
 mount_partitions() {
@@ -507,15 +616,30 @@ copy_system() {
     SOURCE_BOOT="${SOURCE_DISK}1"
     SOURCE_DATA="${SOURCE_DISK}2"
     
+    # Проверяем, существуют ли разделы
+    if [ ! -b "$SOURCE_BOOT" ]; then
+        error_exit "Source boot partition not found: $SOURCE_BOOT / Исходный boot раздел не найден"
+    fi
+    if [ ! -b "$SOURCE_DATA" ]; then
+        error_exit "Source data partition not found: $SOURCE_DATA / Исходный data раздел не найден"
+    fi
+    
     # Монтируем исходные разделы (если не смонтированы)
     mkdir -p /mnt/source_boot /mnt/source_data
     
     if ! mountpoint -q /mnt/source_boot; then
         mount "$SOURCE_BOOT" /mnt/source_boot >> "$LOG_FILE" 2>&1
+        if [ $? -ne 0 ]; then
+            error_exit "Failed to mount source boot partition / Не удалось примонтировать исходный boot раздел"
+        fi
     fi
     
     if ! mountpoint -q /mnt/source_data; then
         mount "$SOURCE_DATA" /mnt/source_data >> "$LOG_FILE" 2>&1
+        if [ $? -ne 0 ]; then
+            umount /mnt/source_boot 2>/dev/null
+            error_exit "Failed to mount source data partition / Не удалось примонтировать исходный data раздел"
+        fi
     fi
     
     # Копирование boot раздела
@@ -578,11 +702,17 @@ update_partuuid() {
     fi
     
     # Получаем PARTUUID для DATA раздела
+    PARTUUID=""
     if command -v blkid >/dev/null 2>&1; then
         PARTUUID=$(blkid -s PARTUUID -o value "$DATA_PART")
-    else
-        # Fallback: используем lsblk
+    fi
+    
+    if [ -z "$PARTUUID" ] && command -v lsblk >/dev/null 2>&1; then
         PARTUUID=$(lsblk -no PARTUUID "$DATA_PART" 2>/dev/null)
+    fi
+    
+    if [ -z "$PARTUUID" ] && [ -e "/sys/block/$(basename $DATA_PART)/partition_uuid" ]; then
+        PARTUUID=$(cat "/sys/block/$(basename $DATA_PART)/partition_uuid")
     fi
     
     if [ -z "$PARTUUID" ]; then
@@ -651,13 +781,19 @@ cleanup() {
     
     # Подсчет статистики (приблизительный)
     if [ "$LANG" = "ru" ]; then
+        echo -e "\n${GREEN}========================================${NC}"
         echo -e "${GREEN}Установка завершена!${NC}"
+        echo -e "${RED}========================================${NC}"
         echo -e "${RED}ВАЖНО: После перезагрузки выберите новый диск в BIOS/UEFI${NC}"
         echo -e "${YELLOW}Лог установки: $LOG_FILE${NC}"
+        echo -e "${GREEN}========================================${NC}\n"
     else
+        echo -e "\n${GREEN}========================================${NC}"
         echo -e "${GREEN}Installation completed!${NC}"
+        echo -e "${RED}========================================${NC}"
         echo -e "${RED}IMPORTANT: After reboot, select the new disk in BIOS/UEFI${NC}"
         echo -e "${YELLOW}Installation log: $LOG_FILE${NC}"
+        echo -e "${GREEN}========================================${NC}\n"
     fi
     
     # Пауза, чтобы пользователь прочитал сообщение
@@ -672,7 +808,7 @@ setup_logging
 # Выбор языка
 choose_language
 
-# ========== БЛОК ПРОВЕРКИ ИНТЕРНЕТА ==========
+# ========== ПРОВЕРКА ИНТЕРНЕТА ==========
 if [ "$LANG" = "ru" ]; then
     echo -e "${YELLOW}Проверка подключения к интернету...${NC}"
 else
@@ -701,16 +837,21 @@ if [ "$LANG" = "ru" ]; then
 else
     echo -e "${GREEN}Internet is available. Continuing...${NC}\n"
 fi
-# ========== КОНЕЦ БЛОКА ПРОВЕРКИ ИНТЕРНЕТА ==========
 
 # Установка пакетов
 install_packages
 
-# Выбор целевого диска
+# Проверка наличия необходимых команд
+check_required_commands
+
+# Выбор целевого диска (куда устанавливать)
 select_target_disk
 
-# Поиск исходного диска
+# Поиск исходного диска (откуда копировать)
 find_source_disk
+
+# Проверка, что диски разные
+check_disks_different
 
 # Создание разделов
 create_partitions
