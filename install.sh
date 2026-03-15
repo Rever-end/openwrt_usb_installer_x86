@@ -371,7 +371,8 @@ find_source_disk() {
     SOURCE_DISK=""
     FOUND_COUNT=0
     FOUND_DISKS=""
-    FOUND_MODEL=""
+    FIRST_FOUND=""
+    FIRST_MODEL=""
     
     # Перебираем все диски
     for disk in /sys/block/*; do
@@ -475,7 +476,6 @@ find_source_disk() {
                 if [ $FOUND -eq 1 ]; then
                     FOUND_COUNT=$((FOUND_COUNT + 1))
                     FOUND_DISKS="$FOUND_DISKS $disk_dev"
-                    FOUND_MODEL="$model"
                     
                     # Запоминаем первый найденный диск (для случая одного диска)
                     if [ $FOUND_COUNT -eq 1 ]; then
@@ -853,81 +853,31 @@ is_mounted() {
 }
 # ========== КОНЕЦ УНИВЕРСАЛЬНОЙ ФУНКЦИИ ==========
 
-# ========== ПРОВЕРКА РАЗМЕРА ПЕРЕД КОПИРОВАНИЕМ ==========
-check_disk_space() {
-    local source_path="$1"
-    local target_path="$2"
-    local source_name="$3"
+# ========== ФУНКЦИЯ КОНВЕРТАЦИИ РАЗМЕРА ==========
+format_size() {
+    local bytes="$1"
     
-    if [ "$LANG" = "ru" ]; then
-        echo -e "${YELLOW}Проверка свободного места...${NC}"
-    else
-        echo -e "${YELLOW}Checking free space...${NC}"
+    if [ -z "$bytes" ] || [ "$bytes" -eq 0 ]; then
+        echo "0B"
+        return
     fi
     
-    # Подсчитываем размер исходных данных
-    log "INFO" "Подсчёт размера $source_name..."
-    
-    if command -v du >/dev/null 2>&1; then
-        SOURCE_SIZE=$(du -sb "$source_path" 2>/dev/null | cut -f1)
-        if [ -z "$SOURCE_SIZE" ] || [ "$SOURCE_SIZE" -eq 0 ]; then
-            log "WARNING" "Не удалось подсчитать размер, продолжаем без проверки"
-            return 0
-        fi
-    else
-        log "WARNING" "Команда du не найдена, продолжаем без проверки"
-        return 0
-    fi
-    
-    # Получаем свободное место на целевом разделе
-    TARGET_FREE=$(df -B1 "$target_path" 2>/dev/null | awk 'NR==2 {print $4}')
-    
-    if [ -z "$TARGET_FREE" ] || [ "$TARGET_FREE" -eq 0 ]; then
-        log "WARNING" "Не удалось определить свободное место, продолжаем без проверки"
-        return 0
-    fi
-    
-    # Конвертируем в человеко-читаемый формат
     if command -v numfmt >/dev/null 2>&1; then
-        SOURCE_HUMAN=$(numfmt --to=iec "$SOURCE_SIZE")
-        TARGET_HUMAN=$(numfmt --to=iec "$TARGET_FREE")
+        numfmt --to=iec "$bytes" 2>/dev/null || echo "${bytes}B"
     else
-        SOURCE_HUMAN="$SOURCE_SIZE bytes"
-        TARGET_HUMAN="$TARGET_FREE bytes"
-    fi
-    
-    if [ "$LANG" = "ru" ]; then
-        echo -e "  Размер данных: ${YELLOW}$SOURCE_HUMAN${NC}"
-        echo -e "  Свободно на целевом диске: ${YELLOW}$TARGET_HUMAN${NC}"
-    else
-        echo -e "  Data size: ${YELLOW}$SOURCE_HUMAN${NC}"
-        echo -e "  Free space on target: ${YELLOW}$TARGET_HUMAN${NC}"
-    fi
-    
-    # Сравниваем (добавляем 10% запаса)
-    SOURCE_SIZE_WITH_MARGIN=$((SOURCE_SIZE * 11 / 10))
-    
-    if [ "$SOURCE_SIZE_WITH_MARGIN" -gt "$TARGET_FREE" ]; then
-        if [ "$LANG" = "ru" ]; then
-            echo -e "${RED}ОШИБКА: Недостаточно места на целевом диске!${NC}"
-            echo -e "Требуется (с запасом 10%): $SOURCE_HUMAN"
-            echo -e "Доступно: $TARGET_HUMAN"
+        # Ручное форматирование
+        if [ "$bytes" -gt 1073741824 ]; then
+            echo "$((bytes / 1073741824))G"
+        elif [ "$bytes" -gt 1048576 ]; then
+            echo "$((bytes / 1048576))M"
+        elif [ "$bytes" -gt 1024 ]; then
+            echo "$((bytes / 1024))K"
         else
-            echo -e "${RED}ERROR: Not enough space on target disk!${NC}"
-            echo -e "Required (with 10% margin): $SOURCE_HUMAN"
-            echo -e "Available: $TARGET_HUMAN"
+            echo "${bytes}B"
         fi
-        return 1
     fi
-    
-    if [ "$LANG" = "ru" ]; then
-        echo -e "${GREEN}✓ Места достаточно${NC}"
-    else
-        echo -e "${GREEN}✓ Enough space${NC}"
-    fi
-    return 0
 }
-# ========== КОНЕЦ ПРОВЕРКИ РАЗМЕРА ==========
+# ========== КОНЕЦ ФУНКЦИИ КОНВЕРТАЦИИ ==========
 
 # Копирование системы
 copy_system() {
@@ -983,80 +933,173 @@ copy_system() {
         fi
     fi
     
-    # ========== ПОЛУЧЕНИЕ РАЗМЕРОВ ==========
-    get_size_human() {
-        local path="$1"
-        if command -v du >/dev/null 2>&1 && command -v numfmt >/dev/null 2>&1; then
-            local size_bytes=$(du -sb "$path" 2>/dev/null | cut -f1)
-            if [ -n "$size_bytes" ] && [ "$size_bytes" -gt 0 ]; then
-                numfmt --to=iec "$size_bytes"
-                return 0
-            fi
+    # ========== ПРОВЕРКА РАЗМЕРОВ ==========
+    if [ "$LANG" = "ru" ]; then
+        echo -e "\n${YELLOW}Проверка размеров разделов...${NC}"
+    else
+        echo -e "\n${YELLOW}Checking partition sizes...${NC}"
+    fi
+    
+    # Получаем размер исходных данных в байтах
+    BOOT_SIZE_BYTES=$(du -sb /mnt/source_boot 2>/dev/null | cut -f1)
+    DATA_SIZE_BYTES=$(du -sb /mnt/source_data 2>/dev/null | cut -f1)
+    
+    # Получаем размер целевых разделов в байтах
+    EFI_SIZE_BYTES=$(df -B1 /mnt/efi 2>/dev/null | awk 'NR==2 {print $2}')
+    DATA_TARGET_SIZE_BYTES=$(df -B1 /mnt/data 2>/dev/null | awk 'NR==2 {print $2}')
+    
+    # Конвертируем в человеко-читаемый формат
+    BOOT_SIZE_HUMAN=$(format_size "$BOOT_SIZE_BYTES")
+    DATA_SIZE_HUMAN=$(format_size "$DATA_SIZE_BYTES")
+    EFI_SIZE_HUMAN=$(format_size "$EFI_SIZE_BYTES")
+    DATA_TARGET_SIZE_HUMAN=$(format_size "$DATA_TARGET_SIZE_BYTES")
+    
+    # Проверка boot раздела
+    if [ -n "$BOOT_SIZE_BYTES" ] && [ -n "$EFI_SIZE_BYTES" ] && [ "$BOOT_SIZE_BYTES" -gt "$EFI_SIZE_BYTES" ]; then
+        log "ERROR" "Boot раздел слишком большой: $BOOT_SIZE_BYTES > $EFI_SIZE_BYTES"
+        if [ "$LANG" = "ru" ]; then
+            echo -e "\n${RED}========================================${NC}"
+            echo -e "${RED}ОШИБКА: Недостаточно места на целевом диске!${NC}"
+            echo -e "${RED}========================================${NC}"
+            echo -e "${YELLOW}Boot раздел (исходный): ${BOOT_SIZE_HUMAN}${NC}"
+            echo -e "${YELLOW}EFI раздел (целевой):  ${EFI_SIZE_HUMAN}${NC}"
+            echo -e "${RED}Исходный boot раздел больше целевого EFI раздела.${NC}"
+            echo -e "${YELLOW}Увеличьте размер EFI раздела или используйте диск большего объёма.${NC}"
+        else
+            echo -e "\n${RED}========================================${NC}"
+            echo -e "${RED}ERROR: Not enough space on target disk!${NC}"
+            echo -e "${RED}========================================${NC}"
+            echo -e "${YELLOW}Boot partition (source): ${BOOT_SIZE_HUMAN}${NC}"
+            echo -e "${YELLOW}EFI partition (target):  ${EFI_SIZE_HUMAN}${NC}"
+            echo -e "${RED}Source boot partition is larger than target EFI partition.${NC}"
+            echo -e "${YELLOW}Increase EFI partition size or use larger disk.${NC}"
         fi
-        echo "unknown"
-        return 1
-    }
-    
-    BOOT_SIZE=$(get_size_human "/mnt/source_boot")
-    DATA_SIZE=$(get_size_human "/mnt/source_data")
-    # ========== КОНЕЦ ПОЛУЧЕНИЯ РАЗМЕРОВ ==========
-    
-    # Проверка размера boot раздела
-    echo -e "\n${YELLOW}Проверка boot раздела...${NC}"
-    check_disk_space "/mnt/source_boot" "/mnt/efi" "boot"
-    if [ $? -ne 0 ]; then
-        error_exit "Not enough space for boot partition / Недостаточно места для boot раздела"
+        error_exit "Source boot partition too large / Исходный boot раздел слишком большой"
     fi
     
-    # Проверка размера data раздела
-    echo -e "\n${YELLOW}Проверка data раздела...${NC}"
-    check_disk_space "/mnt/source_data" "/mnt/data" "data"
-    if [ $? -ne 0 ]; then
-        error_exit "Not enough space for data partition / Недостаточно места для data раздела"
+    # Проверка data раздела
+    if [ -n "$DATA_SIZE_BYTES" ] && [ -n "$DATA_TARGET_SIZE_BYTES" ] && [ "$DATA_SIZE_BYTES" -gt "$DATA_TARGET_SIZE_BYTES" ]; then
+        log "ERROR" "Data раздел слишком большой: $DATA_SIZE_BYTES > $DATA_TARGET_SIZE_BYTES"
+        if [ "$LANG" = "ru" ]; then
+            echo -e "\n${RED}========================================${NC}"
+            echo -e "${RED}ОШИБКА: Недостаточно места на целевом диске!${NC}"
+            echo -e "${RED}========================================${NC}"
+            echo -e "${YELLOW}Data раздел (исходный): ${DATA_SIZE_HUMAN}${NC}"
+            echo -e "${YELLOW}DATA раздел (целевой):  ${DATA_TARGET_SIZE_HUMAN}${NC}"
+            echo -e "${RED}Исходный data раздел больше целевого DATA раздела.${NC}"
+            echo -e "${YELLOW}Используйте диск большего объёма.${NC}"
+        else
+            echo -e "\n${RED}========================================${NC}"
+            echo -e "${RED}ERROR: Not enough space on target disk!${NC}"
+            echo -e "${RED}========================================${NC}"
+            echo -e "${YELLOW}Data partition (source): ${DATA_SIZE_HUMAN}${NC}"
+            echo -e "${YELLOW}DATA partition (target): ${DATA_TARGET_SIZE_HUMAN}${NC}"
+            echo -e "${RED}Source data partition is larger than target DATA partition.${NC}"
+            echo -e "${YELLOW}Use larger disk.${NC}"
+        fi
+        error_exit "Source data partition too large / Исходный data раздел слишком большой"
     fi
+    
+    if [ "$LANG" = "ru" ]; then
+        echo -e "${GREEN}✓ Размеры подходят для копирования${NC}\n"
+    else
+        echo -e "${GREEN}✓ Sizes are OK for copying${NC}\n"
+    fi
+    # ========== КОНЕЦ ПРОВЕРКИ РАЗМЕРОВ ==========
     
     # Копирование boot раздела
     log "INFO" "Копирование boot раздела"
     if [ "$LANG" = "ru" ]; then
-        echo -e "\n${YELLOW}Копирование boot раздела (${BOOT_SIZE})...${NC}"
+        echo -e "\n${YELLOW}Копирование boot раздела...${NC}"
     else
-        echo -e "\n${YELLOW}Copying boot partition (${BOOT_SIZE})...${NC}"
+        echo -e "\n${YELLOW}Copying boot partition...${NC}"
     fi
+    
+    # Временный файл для вывода rsync
+    TEMP_RSYNC_OUT="/tmp/rsync_out.$$"
     
     if command -v rsync >/dev/null 2>&1; then
-        rsync -av --progress /mnt/source_boot/ /mnt/efi/ >> "$LOG_FILE" 2>&1
+        # rsync с минимальным выводом (только общий прогресс)
+        rsync -a --info=progress2 /mnt/source_boot/ /mnt/efi/ 2>&1 | tee "$TEMP_RSYNC_OUT"
+        RSYNC_EXIT=$?
+        
+        # Парсим итоговый размер из вывода rsync
+        if [ $RSYNC_EXIT -eq 0 ]; then
+            TOTAL_SIZE=$(grep "total size is" "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | awk '{print $4}')
+            if [ -n "$TOTAL_SIZE" ] && [ "$TOTAL_SIZE" != "0" ]; then
+                SIZE_HUMAN=$(format_size "$TOTAL_SIZE")
+                if [ "$LANG" = "ru" ]; then
+                    echo -e "${GREEN}✓ Копирование boot раздела завершено (${SIZE_HUMAN})${NC}"
+                else
+                    echo -e "${GREEN}✓ Boot partition copy completed (${SIZE_HUMAN})${NC}"
+                fi
+            else
+                if [ "$LANG" = "ru" ]; then
+                    echo -e "${GREEN}✓ Копирование boot раздела завершено${NC}"
+                else
+                    echo -e "${GREEN}✓ Boot partition copy completed${NC}"
+                fi
+            fi
+        fi
+        rm -f "$TEMP_RSYNC_OUT"
     else
+        # cp - тихо копирует
         cp -a /mnt/source_boot/. /mnt/efi/ >> "$LOG_FILE" 2>&1
-    fi
-    
-    if [ $? -ne 0 ]; then
-        error_exit "Failed to copy boot partition / Не удалось скопировать boot раздел"
+        if [ $? -eq 0 ]; then
+            if [ "$LANG" = "ru" ]; then
+                echo -e "${GREEN}✓ Копирование boot раздела завершено${NC}"
+            else
+                echo -e "${GREEN}✓ Boot partition copy completed${NC}"
+            fi
+        else
+            error_exit "Failed to copy boot partition / Не удалось скопировать boot раздел"
+        fi
     fi
     
     # Копирование data раздела
     log "INFO" "Копирование data раздела"
     if [ "$LANG" = "ru" ]; then
-        echo -e "\n${YELLOW}Копирование data раздела (${DATA_SIZE})...${NC}"
+        echo -e "\n${YELLOW}Копирование data раздела...${NC}"
     else
-        echo -e "\n${YELLOW}Copying data partition (${DATA_SIZE})...${NC}"
+        echo -e "\n${YELLOW}Copying data partition...${NC}"
     fi
     
     if command -v rsync >/dev/null 2>&1; then
-        rsync -av --progress /mnt/source_data/ /mnt/data/ >> "$LOG_FILE" 2>&1
+        rsync -a --info=progress2 /mnt/source_data/ /mnt/data/ 2>&1 | tee "$TEMP_RSYNC_OUT"
+        RSYNC_EXIT=$?
+        
+        if [ $RSYNC_EXIT -eq 0 ]; then
+            TOTAL_SIZE=$(grep "total size is" "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | awk '{print $4}')
+            if [ -n "$TOTAL_SIZE" ] && [ "$TOTAL_SIZE" != "0" ]; then
+                SIZE_HUMAN=$(format_size "$TOTAL_SIZE")
+                if [ "$LANG" = "ru" ]; then
+                    echo -e "${GREEN}✓ Копирование data раздела завершено (${SIZE_HUMAN})${NC}"
+                else
+                    echo -e "${GREEN}✓ Data partition copy completed (${SIZE_HUMAN})${NC}"
+                fi
+            else
+                if [ "$LANG" = "ru" ]; then
+                    echo -e "${GREEN}✓ Копирование data раздела завершено${NC}"
+                else
+                    echo -e "${GREEN}✓ Data partition copy completed${NC}"
+                fi
+            fi
+        fi
+        rm -f "$TEMP_RSYNC_OUT"
     else
         cp -a /mnt/source_data/. /mnt/data/ >> "$LOG_FILE" 2>&1
-    fi
-    
-    if [ $? -ne 0 ]; then
-        error_exit "Failed to copy data partition / Не удалось скопировать data раздел"
+        if [ $? -eq 0 ]; then
+            if [ "$LANG" = "ru" ]; then
+                echo -e "${GREEN}✓ Копирование data раздела завершено${NC}"
+            else
+                echo -e "${GREEN}✓ Data partition copy completed${NC}"
+            fi
+        else
+            error_exit "Failed to copy data partition / Не удалось скопировать data раздел"
+        fi
     fi
     
     log "INFO" "Копирование завершено"
-    if [ "$LANG" = "ru" ]; then
-        echo -e "${GREEN}Копирование завершено${NC}"
-    else
-        echo -e "${GREEN}Copying completed${NC}"
-    fi
     
     # Размонтирование исходных разделов
     if [ $BOOT_MOUNTED -eq 0 ]; then
@@ -1162,16 +1205,16 @@ cleanup() {
         echo -e "\n${GREEN}========================================${NC}"
         echo -e "${GREEN}Установка завершена!${NC}"
         echo -e "${RED}========================================${NC}"
-        # Жирный текст для важного сообщения
-        echo -e "${RED}${BOLD}ВАЖНО: После перезагрузки выберите новый диск в BIOS/UEFI${NC}"
+        # Жирный текст и ПОЛНОСТЬЮ КАПС для важного сообщения
+        echo -e "${RED}${BOLD}ВАЖНО: ПОСЛЕ ПЕРЕЗАГРУЗКИ ВЫБЕРИТЕ НОВЫЙ ДИСК В BIOS/UEFI${NC}"
         echo -e "${YELLOW}Лог установки: $LOG_FILE${NC}"
         echo -e "${GREEN}========================================${NC}\n"
     else
         echo -e "\n${GREEN}========================================${NC}"
         echo -e "${GREEN}Installation completed!${NC}"
         echo -e "${RED}========================================${NC}"
-        # Жирный текст для важного сообщения
-        echo -e "${RED}${BOLD}IMPORTANT: After reboot, select the new disk in BIOS/UEFI${NC}"
+        # Жирный текст и ПОЛНОСТЬЮ КАПС для важного сообщения
+        echo -e "${RED}${BOLD}IMPORTANT: AFTER REBOOT, SELECT THE NEW DISK IN BIOS/UEFI${NC}"
         echo -e "${YELLOW}Installation log: $LOG_FILE${NC}"
         echo -e "${GREEN}========================================${NC}\n"
     fi
