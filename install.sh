@@ -10,6 +10,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+BOLD='\033[1m'      # Жирный текст
 NC='\033[0m' # No Color
 
 # ========== ОБРАБОТКА ПРЕРЫВАНИЙ ==========
@@ -785,6 +786,7 @@ format_partitions() {
     
     # Форматирование EFI в FAT32
     log "INFO" "Форматирование $EFI_PART в FAT32"
+    echo -e "${YELLOW}Форматирование EFI раздела в FAT32...${NC}"
     $FAT_CMD -F32 -n "EFI" "$EFI_PART" >> "$LOG_FILE" 2>&1
     if [ $? -ne 0 ]; then
         error_exit "Failed to format EFI partition / Не удалось отформатировать EFI раздел"
@@ -793,11 +795,16 @@ format_partitions() {
     # Установка флага ESP
     if command -v parted >/dev/null 2>&1; then
         log "INFO" "Установка флага esp on через parted"
+        echo -e "${YELLOW}Устанавливаем флаг ESP (EFI System Partition) для загрузки в UEFI...${NC}"
         parted "$TARGET_DISK" set 1 esp on >> "$LOG_FILE" 2>&1
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}✓ Флаг ESP успешно установлен${NC}"
+        fi
     fi
     
     # Форматирование DATA в ext4
     log "INFO" "Форматирование $DATA_PART в ext4"
+    echo -e "${YELLOW}Форматирование DATA раздела в ext4...${NC}"
     mkfs.ext4 -F -L "DATA" "$DATA_PART" >> "$LOG_FILE" 2>&1
     if [ $? -ne 0 ]; then
         error_exit "Failed to format DATA partition / Не удалось отформатировать DATA раздел"
@@ -863,6 +870,82 @@ is_mounted() {
 }
 # ========== КОНЕЦ УНИВЕРСАЛЬНОЙ ФУНКЦИИ ==========
 
+# ========== ПРОВЕРКА РАЗМЕРА ПЕРЕД КОПИРОВАНИЕМ ==========
+check_disk_space() {
+    local source_path="$1"
+    local target_path="$2"
+    local source_name="$3"
+    
+    if [ "$LANG" = "ru" ]; then
+        echo -e "${YELLOW}Проверка свободного места...${NC}"
+    else
+        echo -e "${YELLOW}Checking free space...${NC}"
+    fi
+    
+    # Подсчитываем размер исходных данных
+    log "INFO" "Подсчёт размера $source_name..."
+    
+    if command -v du >/dev/null 2>&1; then
+        SOURCE_SIZE=$(du -sb "$source_path" 2>/dev/null | cut -f1)
+        if [ -z "$SOURCE_SIZE" ] || [ "$SOURCE_SIZE" -eq 0 ]; then
+            log "WARNING" "Не удалось подсчитать размер, продолжаем без проверки"
+            return 0
+        fi
+    else
+        log "WARNING" "Команда du не найдена, продолжаем без проверки"
+        return 0
+    fi
+    
+    # Получаем свободное место на целевом разделе
+    TARGET_FREE=$(df -B1 "$target_path" 2>/dev/null | awk 'NR==2 {print $4}')
+    
+    if [ -z "$TARGET_FREE" ] || [ "$TARGET_FREE" -eq 0 ]; then
+        log "WARNING" "Не удалось определить свободное место, продолжаем без проверки"
+        return 0
+    fi
+    
+    # Конвертируем в человеко-читаемый формат
+    if command -v numfmt >/dev/null 2>&1; then
+        SOURCE_HUMAN=$(numfmt --to=iec "$SOURCE_SIZE")
+        TARGET_HUMAN=$(numfmt --to=iec "$TARGET_FREE")
+    else
+        SOURCE_HUMAN="$SOURCE_SIZE bytes"
+        TARGET_HUMAN="$TARGET_FREE bytes"
+    fi
+    
+    if [ "$LANG" = "ru" ]; then
+        echo -e "  Размер данных: ${YELLOW}$SOURCE_HUMAN${NC}"
+        echo -e "  Свободно на целевом диске: ${YELLOW}$TARGET_HUMAN${NC}"
+    else
+        echo -e "  Data size: ${YELLOW}$SOURCE_HUMAN${NC}"
+        echo -e "  Free space on target: ${YELLOW}$TARGET_HUMAN${NC}"
+    fi
+    
+    # Сравниваем (добавляем 10% запаса)
+    SOURCE_SIZE_WITH_MARGIN=$((SOURCE_SIZE * 11 / 10))
+    
+    if [ "$SOURCE_SIZE_WITH_MARGIN" -gt "$TARGET_FREE" ]; then
+        if [ "$LANG" = "ru" ]; then
+            echo -e "${RED}ОШИБКА: Недостаточно места на целевом диске!${NC}"
+            echo -e "Требуется (с запасом 10%): $SOURCE_HUMAN"
+            echo -e "Доступно: $TARGET_HUMAN"
+        else
+            echo -e "${RED}ERROR: Not enough space on target disk!${NC}"
+            echo -e "Required (with 10% margin): $SOURCE_HUMAN"
+            echo -e "Available: $TARGET_HUMAN"
+        fi
+        return 1
+    fi
+    
+    if [ "$LANG" = "ru" ]; then
+        echo -e "${GREEN}✓ Места достаточно${NC}"
+    else
+        echo -e "${GREEN}✓ Enough space${NC}"
+    fi
+    return 0
+}
+# ========== КОНЕЦ ПРОВЕРКИ РАЗМЕРА ==========
+
 # Копирование системы
 copy_system() {
     log "INFO" "Копирование системы"
@@ -910,7 +993,6 @@ copy_system() {
         log "INFO" "Монтирование $SOURCE_DATA в /mnt/source_data"
         mount "$SOURCE_DATA" /mnt/source_data >> "$LOG_FILE" 2>&1
         if [ $? -ne 0 ]; then
-            # Если не удалось примонтировать data, размонтируем boot если мы его монтировали
             if [ $BOOT_MOUNTED -eq 0 ]; then
                 umount /mnt/source_boot 2>/dev/null
             fi
@@ -918,21 +1000,26 @@ copy_system() {
         fi
     fi
     
-    # Проверка, что директории не пусты
-    if [ -z "$(ls -A /mnt/source_boot 2>/dev/null)" ]; then
-        error_exit "Source boot directory is empty / Исходная boot директория пуста"
+    # Проверка размера boot раздела
+    echo -e "\n${YELLOW}Проверка boot раздела...${NC}"
+    check_disk_space "/mnt/source_boot" "/mnt/efi" "boot"
+    if [ $? -ne 0 ]; then
+        error_exit "Not enough space for boot partition / Недостаточно места для boot раздела"
     fi
     
-    if [ -z "$(ls -A /mnt/source_data 2>/dev/null)" ]; then
-        error_exit "Source data directory is empty / Исходная data директория пуста"
+    # Проверка размера data раздела
+    echo -e "\n${YELLOW}Проверка data раздела...${NC}"
+    check_disk_space "/mnt/source_data" "/mnt/data" "data"
+    if [ $? -ne 0 ]; then
+        error_exit "Not enough space for data partition / Недостаточно места для data раздела"
     fi
     
     # Копирование boot раздела
     log "INFO" "Копирование boot раздела"
     if [ "$LANG" = "ru" ]; then
-        echo -e "${YELLOW}Копирование boot раздела...${NC}"
+        echo -e "\n${YELLOW}Копирование boot раздела...${NC}"
     else
-        echo -e "${YELLOW}Copying boot partition...${NC}"
+        echo -e "\n${YELLOW}Copying boot partition...${NC}"
     fi
     
     if command -v rsync >/dev/null 2>&1; then
@@ -948,9 +1035,9 @@ copy_system() {
     # Копирование data раздела
     log "INFO" "Копирование data раздела"
     if [ "$LANG" = "ru" ]; then
-        echo -e "${YELLOW}Копирование data раздела...${NC}"
+        echo -e "\n${YELLOW}Копирование data раздела...${NC}"
     else
-        echo -e "${YELLOW}Copying data partition...${NC}"
+        echo -e "\n${YELLOW}Copying data partition...${NC}"
     fi
     
     if command -v rsync >/dev/null 2>&1; then
@@ -970,7 +1057,7 @@ copy_system() {
         echo -e "${GREEN}Copying completed${NC}"
     fi
     
-    # Размонтирование исходных разделов (только если мы их монтировали)
+    # Размонтирование исходных разделов
     if [ $BOOT_MOUNTED -eq 0 ]; then
         umount /mnt/source_boot 2>/dev/null
     fi
@@ -978,7 +1065,6 @@ copy_system() {
         umount /mnt/source_data 2>/dev/null
     fi
     
-    # Удаляем директории, если они пусты
     rmdir /mnt/source_boot /mnt/source_data 2>/dev/null
 }
 
@@ -1075,14 +1161,16 @@ cleanup() {
         echo -e "\n${GREEN}========================================${NC}"
         echo -e "${GREEN}Установка завершена!${NC}"
         echo -e "${RED}========================================${NC}"
-        echo -e "${RED}ВАЖНО: После перезагрузки выберите новый диск в BIOS/UEFI${NC}"
+        # Жирный текст для важного сообщения
+        echo -e "${RED}${BOLD}ВАЖНО: После перезагрузки выберите новый диск в BIOS/UEFI${NC}"
         echo -e "${YELLOW}Лог установки: $LOG_FILE${NC}"
         echo -e "${GREEN}========================================${NC}\n"
     else
         echo -e "\n${GREEN}========================================${NC}"
         echo -e "${GREEN}Installation completed!${NC}"
         echo -e "${RED}========================================${NC}"
-        echo -e "${RED}IMPORTANT: After reboot, select the new disk in BIOS/UEFI${NC}"
+        # Жирный текст для важного сообщения
+        echo -e "${RED}${BOLD}IMPORTANT: After reboot, select the new disk in BIOS/UEFI${NC}"
         echo -e "${YELLOW}Installation log: $LOG_FILE${NC}"
         echo -e "${GREEN}========================================${NC}\n"
     fi
