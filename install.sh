@@ -1019,12 +1019,16 @@ copy_system() {
     TEMP_RSYNC_OUT="/tmp/rsync_out.$$"
     
     if command -v rsync >/dev/null 2>&1; then
-        # Тихое копирование, сохраняем вывод для получения размера
+        # Проверяем версию rsync
+        RSYNC_VERSION=$(rsync --version 2>/dev/null | head -1)
+        log "INFO" "Найден rsync: $RSYNC_VERSION"
+        
+        # Пробуем скопировать через rsync
         rsync -a /mnt/source_boot/ /mnt/efi/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
-        # Парсим итоговый размер из вывода rsync
         if [ $RSYNC_EXIT -eq 0 ]; then
+            # Успешно
             TOTAL_SIZE=$(grep "total size is" "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | awk '{print $4}')
             if [ -n "$TOTAL_SIZE" ] && [ "$TOTAL_SIZE" != "0" ]; then
                 SIZE_HUMAN=$(format_size "$TOTAL_SIZE")
@@ -1033,17 +1037,47 @@ copy_system() {
                 else
                     echo -e "${GREEN}✓ Boot partition copy completed (${SIZE_HUMAN})${NC}"
                 fi
+                log "INFO" "Boot раздел успешно скопирован через rsync, размер: $TOTAL_SIZE байт ($SIZE_HUMAN)"
             else
                 if [ "$LANG" = "ru" ]; then
                     echo -e "${GREEN}✓ Копирование boot раздела завершено${NC}"
                 else
                     echo -e "${GREEN}✓ Boot partition copy completed${NC}"
                 fi
+                log "INFO" "Boot раздел успешно скопирован через rsync (размер не определён)"
+            fi
+        else
+            # Ошибка rsync - логируем причину и падаем в cp
+            log "WARNING" "rsync завершился с ошибкой (код: $RSYNC_EXIT)"
+            
+            # Парсим ошибку из вывода
+            RSYNC_ERROR=$(grep -i "error\|failed\|cannot" "$TEMP_RSYNC_OUT" 2>/dev/null | head -3 | tr '\n' '; ')
+            if [ -n "$RSYNC_ERROR" ]; then
+                log "WARNING" "Ошибка rsync: $RSYNC_ERROR"
+            else
+                log "WARNING" "Полный вывод rsync сохранён в логе"
+                cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
+            fi
+            
+            # Пробуем через cp как запасной вариант
+            log "INFO" "Пробуем скопировать через cp (как запасной вариант)"
+            cp -a /mnt/source_boot/. /mnt/efi/ >> "$LOG_FILE" 2>&1
+            if [ $? -eq 0 ]; then
+                if [ "$LANG" = "ru" ]; then
+                    echo -e "${GREEN}✓ Копирование boot раздела завершено${NC}"
+                else
+                    echo -e "${GREEN}✓ Boot partition copy completed${NC}"
+                fi
+                log "INFO" "Boot раздел скопирован через cp (rsync не сработал)"
+            else
+                log "ERROR" "Ошибка при копировании boot раздела через cp"
+                error_exit "Failed to copy boot partition / Не удалось скопировать boot раздел"
             fi
         fi
         rm -f "$TEMP_RSYNC_OUT"
     else
-        # cp - тихо копирует, но не даёт статистики
+        # rsync не найден в системе
+        log "INFO" "rsync не установлен в системе, используется cp"
         cp -a /mnt/source_boot/. /mnt/efi/ >> "$LOG_FILE" 2>&1
         if [ $? -eq 0 ]; then
             if [ "$LANG" = "ru" ]; then
@@ -1051,7 +1085,9 @@ copy_system() {
             else
                 echo -e "${GREEN}✓ Boot partition copy completed${NC}"
             fi
+            log "INFO" "Boot раздел скопирован через cp (rsync отсутствует)"
         else
+            log "ERROR" "Ошибка при копировании boot раздела через cp"
             error_exit "Failed to copy boot partition / Не удалось скопировать boot раздел"
         fi
     fi
@@ -1065,6 +1101,10 @@ copy_system() {
     fi
     
     if command -v rsync >/dev/null 2>&1; then
+        # Проверяем версию rsync
+        RSYNC_VERSION=$(rsync --version 2>/dev/null | head -1)
+        log "INFO" "Найден rsync: $RSYNC_VERSION"
+        
         rsync -a /mnt/source_data/ /mnt/data/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
@@ -1077,16 +1117,43 @@ copy_system() {
                 else
                     echo -e "${GREEN}✓ Data partition copy completed (${SIZE_HUMAN})${NC}"
                 fi
+                log "INFO" "Data раздел успешно скопирован через rsync, размер: $TOTAL_SIZE байт ($SIZE_HUMAN)"
             else
                 if [ "$LANG" = "ru" ]; then
                     echo -e "${GREEN}✓ Копирование data раздела завершено${NC}"
                 else
                     echo -e "${GREEN}✓ Data partition copy completed${NC}"
                 fi
+                log "INFO" "Data раздел успешно скопирован через rsync (размер не определён)"
+            fi
+        else
+            log "WARNING" "rsync завершился с ошибкой (код: $RSYNC_EXIT)"
+            
+            RSYNC_ERROR=$(grep -i "error\|failed\|cannot" "$TEMP_RSYNC_OUT" 2>/dev/null | head -3 | tr '\n' '; ')
+            if [ -n "$RSYNC_ERROR" ]; then
+                log "WARNING" "Ошибка rsync: $RSYNC_ERROR"
+            else
+                log "WARNING" "Полный вывод rsync сохранён в логе"
+                cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
+            fi
+            
+            log "INFO" "Пробуем скопировать через cp (как запасной вариант)"
+            cp -a /mnt/source_data/. /mnt/data/ >> "$LOG_FILE" 2>&1
+            if [ $? -eq 0 ]; then
+                if [ "$LANG" = "ru" ]; then
+                    echo -e "${GREEN}✓ Копирование data раздела завершено${NC}"
+                else
+                    echo -e "${GREEN}✓ Data partition copy completed${NC}"
+                fi
+                log "INFO" "Data раздел скопирован через cp (rsync не сработал)"
+            else
+                log "ERROR" "Ошибка при копировании data раздела через cp"
+                error_exit "Failed to copy data partition / Не удалось скопировать data раздел"
             fi
         fi
         rm -f "$TEMP_RSYNC_OUT"
     else
+        log "INFO" "rsync не установлен в системе, используется cp"
         cp -a /mnt/source_data/. /mnt/data/ >> "$LOG_FILE" 2>&1
         if [ $? -eq 0 ]; then
             if [ "$LANG" = "ru" ]; then
@@ -1094,7 +1161,9 @@ copy_system() {
             else
                 echo -e "${GREEN}✓ Data partition copy completed${NC}"
             fi
+            log "INFO" "Data раздел скопирован через cp (rsync отсутствует)"
         else
+            log "ERROR" "Ошибка при копировании data раздела через cp"
             error_exit "Failed to copy data partition / Не удалось скопировать data раздел"
         fi
     fi
@@ -1193,12 +1262,43 @@ cleanup() {
         echo -e "${YELLOW}Cleaning up...${NC}"
     fi
     
+    # Запускаем спиннер
+    {
+        local spin='-\|/'
+        local i=0
+        
+        while kill -0 $$ 2>/dev/null; do
+            i=$(( (i+1) % 4 ))
+            printf "\r${YELLOW}Очистка... ${spin:$i:1}${NC}"
+            sleep 0.5
+        done
+    } &
+    SPINNER_PID=$!
+    
+    # Сохраняем время начала
+    START_TIME=$(date +%s)
+    
     # Размонтирование
     umount /mnt/efi 2>/dev/null
     umount /mnt/data 2>/dev/null
     rmdir /mnt/efi /mnt/data 2>/dev/null
     
-    log "INFO" "Очистка завершена"
+    # Считаем время
+    END_TIME=$(date +%s)
+    DURATION=$((END_TIME - START_TIME))
+    
+    # Убиваем спиннер
+    kill $SPINNER_PID 2>/dev/null
+    wait $SPINNER_PID 2>/dev/null
+    
+    log "INFO" "Очистка завершена за $DURATION секунд"
+    
+    # Финальное сообщение с временем
+    if [ "$LANG" = "ru" ]; then
+        echo -e "\r${GREEN}✓ Очистка завершена (${DURATION} сек)${NC}"
+    else
+        echo -e "\r${GREEN}✓ Cleanup completed (${DURATION} sec)${NC}"
+    fi
     
     # Подсчет статистики (приблизительный)
     if [ "$LANG" = "ru" ]; then
