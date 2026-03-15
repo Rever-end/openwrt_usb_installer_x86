@@ -51,14 +51,14 @@ error_exit() {
     fi
     read -p "" VIEW_LOG
     
-    if [[ "$VIEW_LOG" =~ ^[Yy]$ ]]; then
-        if command -v nano &>/dev/null; then
+    if [ "$VIEW_LOG" = "y" ] || [ "$VIEW_LOG" = "Y" ]; then
+        if command -v nano >/dev/null 2>&1; then
             nano "$LOG_FILE"
-        elif command -v vi &>/dev/null; then
+        elif command -v vi >/dev/null 2>&1; then
             vi "$LOG_FILE"
-        elif command -v vim &>/dev/null; then
+        elif command -v vim >/dev/null 2>&1; then
             vim "$LOG_FILE"
-        elif command -v less &>/dev/null; then
+        elif command -v less >/dev/null 2>&1; then
             less "$LOG_FILE"
         else
             cat "$LOG_FILE"
@@ -94,20 +94,15 @@ choose_language() {
     esac
 }
 
-# ========== НОВАЯ ФУНКЦИЯ: ПРОВЕРКА ИНТЕРНЕТА ==========
+# ========== ФУНКЦИЯ ПРОВЕРКИ ИНТЕРНЕТА (ИСПРАВЛЕННАЯ) ==========
 check_internet() {
     log "INFO" "Проверка подключения к интернету..."
     
-    # Цели для проверки (IP и домены)
-    local targets=(
-        "1.1.1.1"        # Cloudflare DNS (глобально)
-        "9.9.9.9"        # IBM Quad9 (Швейцария)
-        "openwrt.org"    # Основной сайт OpenWRT (Германия)
-        "kernel.org"     # Инфраструктура Linux (разные страны)
-    )
-    
+    # Цели для проверки (без массивов, совместимо с ash)
+    local targets="1.1.1.1 9.9.9.9 openwrt.org kernel.org"
     local success=0
-    for target in "${targets[@]}"; do
+    
+    for target in $targets; do
         if ping -c 1 -W 3 "$target" >/dev/null 2>&1; then
             log "INFO" "Доступен: $target"
             success=1
@@ -118,7 +113,7 @@ check_internet() {
     done
     
     # Если ping не сработал, пробуем curl (на случай блокировки ICMP)
-    if [ $success -eq 0 ] && command -v curl &>/dev/null; then
+    if [ $success -eq 0 ] && command -v curl >/dev/null 2>&1; then
         log "INFO" "Пинг не сработал, пробуем curl..."
         if curl -s --connect-timeout 3 "http://1.1.1.1" >/dev/null 2>&1; then
             log "INFO" "HTTP доступен через 1.1.1.1"
@@ -134,7 +129,7 @@ check_internet() {
         return 1
     fi
 }
-# ========== КОНЕЦ НОВОЙ ФУНКЦИИ ==========
+# ========== КОНЕЦ ФУНКЦИИ ПРОВЕРКИ ИНТЕРНЕТА ==========
 
 # Установка необходимых пакетов
 install_packages() {
@@ -147,12 +142,12 @@ install_packages() {
     fi
     
     # Определяем менеджер пакетов (apk или opkg)
-    if command -v apk &>/dev/null; then
+    if command -v apk >/dev/null 2>&1; then
         PKG_MANAGER="apk"
         PKG_UPDATE="apk update"
         PKG_INSTALL="apk add"
         log "INFO" "Используется apk (новые версии OpenWRT)"
-    elif command -v opkg &>/dev/null; then
+    elif command -v opkg >/dev/null 2>&1; then
         PKG_MANAGER="opkg"
         PKG_UPDATE="opkg update"
         PKG_INSTALL="opkg install"
@@ -179,9 +174,6 @@ install_packages() {
     fi
     
     eval $PKG_UPDATE >> "$LOG_FILE" 2>&1
-    if [ $? -ne 0 ]; then
-        log "WARNING" "Не удалось обновить список пакетов"
-    fi
     
     # Установка пакетов по одному
     for pkg in $PACKAGES; do
@@ -243,7 +235,11 @@ select_target_disk() {
         if [ -f "$disk/size" ]; then
             size_sectors=$(cat "$disk/size")
             size_bytes=$((size_sectors * 512))
-            size_human=$(numfmt --to=iec "$size_bytes" 2>/dev/null || echo "$size_bytes bytes")
+            if command -v numfmt >/dev/null 2>&1; then
+                size_human=$(numfmt --to=iec "$size_bytes")
+            else
+                size_human="$size_bytes bytes"
+            fi
         else
             size_human="Unknown"
         fi
@@ -255,7 +251,6 @@ select_target_disk() {
         fi
         
         DISK_COUNT=$((DISK_COUNT + 1))
-        DISKS="$DISKS$disk_name|$size_human|$model\n"
         
         echo "$DISK_COUNT) /dev/$disk_name - $model ($size_human)"
     done
@@ -272,8 +267,8 @@ select_target_disk() {
         error_exit "Invalid disk number / Неверный номер диска"
     fi
     
-    # Получаем выбранный диск
-    SELECTED_DISK="/dev/$(echo "$DISKS" | sed -n "${DISK_NUM}p" | cut -d'|' -f1)"
+    # Получаем выбранный диск (упрощенно, без сложного парсинга)
+    SELECTED_DISK="/dev/$(ls /sys/block | grep -v loop | grep -v ram | grep -v sr | sed -n "${DISK_NUM}p")"
     
     if [ "$LANG" = "ru" ]; then
         echo -e "${YELLOW}Выбран диск: ${RED}${SELECTED_DISK}${NC}"
@@ -285,7 +280,7 @@ select_target_disk() {
     
     # Подтверждение
     read -p "$(echo -e "${YELLOW}Confirm selection? / Подтвердить выбор? (y/N): ${NC}")" CONFIRM
-    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+    if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
         error_exit "Operation cancelled / Операция отменена"
     fi
     
@@ -514,7 +509,7 @@ copy_system() {
         echo -e "${YELLOW}Copying boot partition...${NC}"
     fi
     
-    if command -v rsync &>/dev/null; then
+    if command -v rsync >/dev/null 2>&1; then
         rsync -av --progress /mnt/source_boot/ /mnt/efi/ >> "$LOG_FILE" 2>&1
     else
         cp -a /mnt/source_boot/. /mnt/efi/ >> "$LOG_FILE" 2>&1
@@ -532,7 +527,7 @@ copy_system() {
         echo -e "${YELLOW}Copying data partition...${NC}"
     fi
     
-    if command -v rsync &>/dev/null; then
+    if command -v rsync >/dev/null 2>&1; then
         rsync -av --progress /mnt/source_data/ /mnt/data/ >> "$LOG_FILE" 2>&1
     else
         cp -a /mnt/source_data/. /mnt/data/ >> "$LOG_FILE" 2>&1
@@ -566,7 +561,7 @@ update_partuuid() {
     fi
     
     # Получаем PARTUUID для DATA раздела
-    if command -v blkid &>/dev/null; then
+    if command -v blkid >/dev/null 2>&1; then
         PARTUUID=$(blkid -s PARTUUID -o value "$DATA_PART")
     else
         # Fallback: используем lsblk
@@ -660,14 +655,17 @@ setup_logging
 # Выбор языка
 choose_language
 
-# ========== НОВЫЙ БЛОК: ПРОВЕРКА ИНТЕРНЕТА ==========
+# ========== БЛОК ПРОВЕРКИ ИНТЕРНЕТА ==========
 if [ "$LANG" = "ru" ]; then
     echo -e "${YELLOW}Проверка подключения к интернету...${NC}"
 else
     echo -e "${YELLOW}Checking internet connection...${NC}"
 fi
 
-if ! check_internet; then
+check_internet
+INTERNET_STATUS=$?
+
+if [ $INTERNET_STATUS -ne 0 ]; then
     if [ "$LANG" = "ru" ]; then
         echo -e "\n${RED}ОШИБКА: Для работы скрипта необходим доступ в интернет.${NC}"
         echo -e "${YELLOW}Проверены: 1.1.1.1, 9.9.9.9, openwrt.org, kernel.org${NC}"
@@ -686,7 +684,7 @@ if [ "$LANG" = "ru" ]; then
 else
     echo -e "${GREEN}Internet is available. Continuing...${NC}\n"
 fi
-# ========== КОНЕЦ НОВОГО БЛОКА ==========
+# ========== КОНЕЦ БЛОКА ПРОВЕРКИ ИНТЕРНЕТА ==========
 
 # Установка пакетов
 install_packages
