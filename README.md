@@ -1,6 +1,3 @@
-
-
-```markdown
 # OpenWRT USB to Internal Disk Installer (x86)
 
 Скрипт для автоматической установки OpenWRT со съемных носителей на диск x86_x64-совместимого компьютера (SSD/HDD).  
