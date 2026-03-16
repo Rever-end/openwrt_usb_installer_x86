@@ -1024,18 +1024,17 @@ copy_system() {
         RSYNC_VERSION=$(rsync --version 2>/dev/null | head -1)
         log "INFO" "Найден rsync: $RSYNC_VERSION"
         
-        # Копируем и сохраняем вывод во временный файл
-        rsync -a /mnt/source_boot/ /mnt/efi/ > "$TEMP_RSYNC_OUT" 2>&1
+        # Копируем с флагом -v для получения статистики
+        rsync -av /mnt/source_boot/ /mnt/efi/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
-        # ==== ВАЖНО: СОХРАНЯЕМ ВЫВОД RSYNC В ОСНОВНОЙ ЛОГ ====
+        # Сохраняем вывод rsync в основной лог
         if [ -s "$TEMP_RSYNC_OUT" ]; then
             cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
             log "INFO" "Вывод rsync сохранён в лог (размер: $(wc -c < "$TEMP_RSYNC_OUT") байт)"
         else
             log "WARNING" "Файл вывода rsync пуст!"
         fi
-        # ====================================================
         
         if [ $RSYNC_EXIT -eq 0 ]; then
             # Парсинг размера (убираем запятые)
@@ -1069,15 +1068,15 @@ copy_system() {
                     echo -e "${GREEN}✓ Boot partition copy completed${NC}"
                 fi
                 log "INFO" "Boot раздел успешно скопирован через rsync (размер не определён)"
-                # Добавим отладку - первые 10 строк файла
+                # Отладка - первые 10 строк файла
                 log "INFO" "=== ПЕРВЫЕ 10 СТРОК ВЫВОДА RSYNC ==="
-                head -10 "$TEMP_RSYNC_OUT" | while read line; do
+                head -10 "$TEMP_RSYNC_OUT" 2>/dev/null | while read line; do
                     log "INFO" "RSYNC: $line"
                 done
                 log "INFO" "=== КОНЕЦ ВЫВОДА RSYNC ==="
             fi
         else
-            # Ошибка rsync - логируем причину и падаем в cp
+            # Ошибка rsync - логируем причину и пробуем cp
             log "WARNING" "rsync завершился с ошибкой (код: $RSYNC_EXIT)"
             
             # Парсим ошибку из вывода
@@ -1132,17 +1131,17 @@ copy_system() {
         RSYNC_VERSION=$(rsync --version 2>/dev/null | head -1)
         log "INFO" "Найден rsync: $RSYNC_VERSION"
         
-        rsync -a /mnt/source_data/ /mnt/data/ > "$TEMP_RSYNC_OUT" 2>&1
+        # Копируем с флагом -v для получения статистики
+        rsync -av /mnt/source_data/ /mnt/data/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
-        # ==== ВАЖНО: СОХРАНЯЕМ ВЫВОД RSYNC В ОСНОВНОЙ ЛОГ ====
+        # Сохраняем вывод rsync в основной лог
         if [ -s "$TEMP_RSYNC_OUT" ]; then
             cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
             log "INFO" "Вывод rsync сохранён в лог (размер: $(wc -c < "$TEMP_RSYNC_OUT") байт)"
         else
             log "WARNING" "Файл вывода rsync пуст!"
         fi
-        # ====================================================
         
         if [ $RSYNC_EXIT -eq 0 ]; then
             # Парсинг размера (убираем запятые)
@@ -1176,9 +1175,9 @@ copy_system() {
                     echo -e "${GREEN}✓ Data partition copy completed${NC}"
                 fi
                 log "INFO" "Data раздел успешно скопирован через rsync (размер не определён)"
-                # Добавим отладку - первые 10 строк файла
+                # Отладка - первые 10 строк файла
                 log "INFO" "=== ПЕРВЫЕ 10 СТРОК ВЫВОДА RSYNC ==="
-                head -10 "$TEMP_RSYNC_OUT" | while read line; do
+                head -10 "$TEMP_RSYNC_OUT" 2>/dev/null | while read line; do
                     log "INFO" "RSYNC: $line"
                 done
                 log "INFO" "=== КОНЕЦ ВЫВОДА RSYNC ==="
