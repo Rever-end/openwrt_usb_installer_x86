@@ -1383,3 +1383,85 @@ cleanup() {
         echo -e "${YELLOW}Press the appropriate key immediately after power on${NC}"
         echo -e ""
         echo -e "${YELLOW}Installation log: $LOG_FILE${NC}"
+        echo -e "${GREEN}========================================${NC}\n"
+    fi
+    
+    # Пауза, чтобы пользователь прочитал сообщение
+    read -p "$(echo -e "${YELLOW}Press Enter to exit / Нажмите Enter для выхода${NC}")"
+}
+
+# ========== ОСНОВНАЯ ЛОГИКА ==========
+
+# Настройка логирования
+setup_logging
+
+# Выбор языка
+choose_language
+echo  # Пустая строка после выбора языка
+
+# ========== ПРОВЕРКА ИНТЕРНЕТА ==========
+if [ "$LANG" = "ru" ]; then
+    echo -e "${YELLOW}Проверка подключения к интернету...${NC}"
+else
+    echo -e "${YELLOW}Checking internet connection...${NC}"
+fi
+
+check_internet
+INTERNET_STATUS=$?
+
+if [ $INTERNET_STATUS -ne 0 ]; then
+    if [ "$LANG" = "ru" ]; then
+        echo -e "\n${RED}ОШИБКА: Для работы скрипта необходим доступ в интернет.${NC}"
+        echo -e "${YELLOW}Проверены: 1.1.1.1, 9.9.9.9, openwrt.org, kernel.org${NC}"
+        echo -e "${YELLOW}Пожалуйста, подключите сетевой кабель и запустите скрипт заново.${NC}\n"
+    else
+        echo -e "\n${RED}ERROR: Internet connection is required for this script.${NC}"
+        echo -e "${YELLOW}Checked: 1.1.1.1, 9.9.9.9, openwrt.org, kernel.org${NC}"
+        echo -e "${YELLOW}Please connect network cable and run the script again.${NC}\n"
+    fi
+    log "ERROR" "Нет подключения к интернету. Скрипт остановлен."
+    exit 1
+fi
+
+if [ "$LANG" = "ru" ]; then
+    echo -e "${GREEN}Интернет доступен. Продолжаем...${NC}"
+else
+    echo -e "${GREEN}Internet is available. Continuing...${NC}"
+fi
+echo    # Две пустые строки после проверки интернета
+echo
+
+# Установка пакетов
+install_packages
+
+# Проверка наличия необходимых команд
+check_required_commands
+
+# Выбор целевого диска (куда устанавливать)
+select_target_disk
+
+# Поиск исходного диска (откуда копировать)
+find_source_disk
+
+# Проверка, что диски разные
+check_disks_different
+
+# Создание разделов (с автоматическим размонтированием)
+create_partitions
+
+# Форматирование
+format_partitions
+
+# Монтирование
+mount_partitions
+
+# Копирование
+copy_system
+
+# Обновление PARTUUID
+update_partuuid
+
+# Очистка
+cleanup
+
+exit 0
