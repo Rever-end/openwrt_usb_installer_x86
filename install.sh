@@ -1023,12 +1023,13 @@ copy_system() {
         RSYNC_VERSION=$(rsync --version 2>/dev/null | head -1)
         log "INFO" "Найден rsync: $RSYNC_VERSION"
         
-        # Копируем и сохраняем вывод
+        # Копируем и сохраняем вывод во временный файл
         rsync -a /mnt/source_boot/ /mnt/efi/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
-        # Сохраняем вывод rsync в основной лог
+        # ==== СОХРАНЯЕМ ВЫВОД RSYNC В ОСНОВНОЙ ЛОГ ====
         cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
+        # ============================================
         
         if [ $RSYNC_EXIT -eq 0 ]; then
             # Улучшенный парсинг размера (убираем запятые)
@@ -1122,8 +1123,9 @@ copy_system() {
         rsync -a /mnt/source_data/ /mnt/data/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
-        # Сохраняем вывод rsync в основной лог
+        # ==== СОХРАНЯЕМ ВЫВОД RSYNC В ОСНОВНОЙ ЛОГ ====
         cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
+        # ============================================
         
         if [ $RSYNC_EXIT -eq 0 ]; then
             # Улучшенный парсинг размера (убираем запятые)
@@ -1285,21 +1287,16 @@ update_partuuid() {
 cleanup() {
     log "INFO" "Очистка и финализация"
     
-    if [ "$LANG" = "ru" ]; then
-        echo -e "${YELLOW}Очистка...${NC}"
-    else
-        echo -e "${YELLOW}Cleaning up...${NC}"
-    fi
-    
-    # Запускаем спиннер (с целыми секундами)
+    # Запускаем спиннер с цветом
     {
         local spin='-\|/'
         local i=0
         
         while kill -0 $$ 2>/dev/null; do
             i=$(( (i+1) % 4 ))
+            # Вся строка целиком перезаписывается с цветом
             printf "\r${YELLOW}Очистка... ${spin:$i:1}${NC}"
-            sleep 1  # Целое число, работает везде
+            sleep 1
         done
     } &
     SPINNER_PID=$!
@@ -1322,7 +1319,7 @@ cleanup() {
     
     log "INFO" "Очистка завершена за $DURATION секунд"
     
-    # Финальное сообщение с временем
+    # Финальное сообщение с временем (перезаписывает последнюю строку спиннера)
     if [ "$LANG" = "ru" ]; then
         echo -e "\r${GREEN}✓ Очистка завершена (${DURATION} сек)${NC}"
     else
