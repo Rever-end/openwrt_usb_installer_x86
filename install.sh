@@ -84,12 +84,12 @@ error_exit() {
     exit 1
 }
 
-# Выбор языка
+# ========== ВЫБОР ЯЗЫКА (ЦВЕТНОЙ) ==========
 choose_language() {
-    echo "Please choose your language / Пожалуйста, выберите язык:"
-    echo "1) Русский"
-    echo "2) English"
-    read -p "Enter 1 or 2 / Введите 1 или 2: " LANG_CHOICE
+    echo -e "\n${YELLOW}Please choose your language / Пожалуйста, выберите язык:${NC}"
+    echo -e "${GREEN}1) Русский${NC}"
+    echo -e "${BLUE}2) English${NC}"
+    read -p "$(echo -e "${YELLOW}Enter 1 or 2 / Введите 1 или 2: ${NC}")" LANG_CHOICE
     
     case $LANG_CHOICE in
         1)
@@ -187,6 +187,7 @@ install_packages() {
     else
         echo -e "${YELLOW}Updating package list...${NC}"
     fi
+    echo  # Пустая строка после сообщения
     
     eval $PKG_UPDATE >> "$LOG_FILE" 2>&1
     
@@ -223,6 +224,7 @@ install_packages() {
     else
         echo -e "${GREEN}Package installation completed${NC}"
     fi
+    echo  # Пустая строка после завершения
 }
 
 # Проверка наличия необходимых команд
@@ -338,7 +340,8 @@ select_target_disk() {
     
     # Финальное предупреждение
     echo -e "\n${RED}WARNING: ALL DATA ON $SELECTED_DISK WILL BE DESTROYED!${NC}"
-    echo -e "${RED}ПРЕДУПРЕЖДЕНИЕ: ВСЕ ДАННЫЕ НА $SELECTED_DISK БУДУТ УНИЧТОЖЕНЫ!${NC}\n"
+    echo -e "${RED}ПРЕДУПРЕЖДЕНИЕ: ВСЕ ДАННЫЕ НА $SELECTED_DISK БУДУТ УНИЧТОЖЕНЫ!${NC}"
+    echo  # Пустая строка после предупреждения
     
     if [ "$LANG" = "ru" ]; then
         read -p "$(echo -e "${RED}Введите 'yes' для подтверждения форматирования: ${NC}")" FINAL_CONFIRM
@@ -354,17 +357,19 @@ select_target_disk() {
     log "INFO" "Финальное подтверждение получено, целевой диск: $TARGET_DISK"
 }
 
-# ========== УЛУЧШЕННЫЙ ПОИСК ИСХОДНОГО ДИСКА ПО СОДЕРЖИМОМУ ==========
+# ========== ПОИСК ИСХОДНОГО ДИСКА ==========
 find_source_disk() {
     log "INFO" "Поиск исходного диска с OpenWRT по содержимому"
     
     if [ "$LANG" = "ru" ]; then
         echo -e "\n${YELLOW}=== ПОИСК ИСХОДНОГО ДИСКА С OpenWRT ===${NC}"
-        echo -e "${YELLOW}Сканирую диски в поисках файлов OpenWRT...${NC}\n"
+        echo -e "${YELLOW}Сканирую диски в поисках файлов OpenWRT...${NC}"
     else
         echo -e "\n${YELLOW}=== LOOKING FOR SOURCE DISK WITH OpenWRT ===${NC}"
-        echo -e "${YELLOW}Scanning disks for OpenWRT files...${NC}\n"
+        echo -e "${YELLOW}Scanning disks for OpenWRT files...${NC}"
     fi
+    echo    # Две пустые строки после сканирования
+    echo
     
     # Создаём временную директорию для монтирования
     mkdir -p /mnt/scan_disk
@@ -494,8 +499,6 @@ find_source_disk() {
     # Удаляем временную директорию
     rmdir /mnt/scan_disk 2>/dev/null
     
-    echo ""
-    
     # Анализируем результаты
     if [ $FOUND_COUNT -eq 0 ]; then
         # Если не нашли ни одного диска с OpenWRT
@@ -569,7 +572,8 @@ find_source_disk() {
             
             if [ -z "$SOURCE_CONFIRM" ] || [ "$SOURCE_CONFIRM" = "y" ] || [ "$SOURCE_CONFIRM" = "Y" ]; then
                 log "INFO" "Исходный диск выбран из единственного варианта: $SOURCE_DISK"
-                echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}\n"
+                echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}"
+                echo  # Пустая строка после подтверждения
             else
                 error_exit "Operation cancelled / Операция отменена"
             fi
@@ -588,23 +592,27 @@ find_source_disk() {
             
             SOURCE_DISK=$(echo $SOURCE_DISKS | tr ' ' '\n' | sed -n "${SOURCE_NUM}p")
             log "INFO" "Исходный диск выбран вручную: $SOURCE_DISK"
-            echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}\n"
+            echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}"
+            echo  # Пустая строка после выбора
         fi
         
     elif [ $FOUND_COUNT -eq 1 ]; then
         # Нашли ровно один диск с OpenWRT
         SOURCE_DISK="$FIRST_FOUND"
         if [ "$LANG" = "ru" ]; then
-            echo -e "${GREEN}Найден диск с OpenWRT: $SOURCE_DISK $FIRST_MODEL${NC}"
+            echo -e "\n${GREEN}Найден диск с OpenWRT: $SOURCE_DISK $FIRST_MODEL${NC}"
+            echo  # Пустая строка перед вопросом
             read -p "$(echo -e "${YELLOW}Копировать систему с этого диска? (Y/n): ${NC}")" SOURCE_CONFIRM
         else
-            echo -e "${GREEN}Found OpenWRT disk: $SOURCE_DISK $FIRST_MODEL${NC}"
+            echo -e "\n${GREEN}Found OpenWRT disk: $SOURCE_DISK $FIRST_MODEL${NC}"
+            echo
             read -p "$(echo -e "${YELLOW}Copy system from this disk? (Y/n): ${NC}")" SOURCE_CONFIRM
         fi
         
         if [ -z "$SOURCE_CONFIRM" ] || [ "$SOURCE_CONFIRM" = "y" ] || [ "$SOURCE_CONFIRM" = "Y" ]; then
             log "INFO" "Исходный диск подтверждён: $SOURCE_DISK"
-            echo -e "${GREEN}Исходный диск: $SOURCE_DISK${NC}\n"
+            echo -e "${GREEN}Исходный диск: $SOURCE_DISK${NC}"
+            echo  # Пустая строка после подтверждения
         else
             error_exit "Operation cancelled / Операция отменена"
         fi
@@ -639,7 +647,8 @@ find_source_disk() {
         
         SOURCE_DISK=$(echo $FOUND_DISKS | tr ' ' '\n' | sed -n "${SOURCE_NUM}p")
         log "INFO" "Исходный диск выбран из нескольких: $SOURCE_DISK"
-        echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}\n"
+        echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}"
+        echo  # Пустая строка после выбора
     fi
 }
 
@@ -694,6 +703,7 @@ create_partitions() {
     
     # Сначала размонтируем целевой диск
     unmount_target_disk
+    echo  # Пустая строка после размонтирования
     
     # Очистка существующей таблицы разделов и создание GPT
     log "INFO" "Очистка диска и создание GPT таблицы"
@@ -731,6 +741,7 @@ create_partitions() {
         echo "  EFI: $EFI_PART (256 MB, type: EFI System)"
         echo "  DATA: $DATA_PART (remaining)"
     fi
+    echo  # Пустая строка после создания разделов
 }
 
 # ========== ФОРМАТИРОВАНИЕ РАЗДЕЛОВ ==========
@@ -771,6 +782,7 @@ format_partitions() {
     # Форматирование EFI в FAT32
     log "INFO" "Форматирование $EFI_PART в FAT32"
     echo -e "${YELLOW}Форматирование EFI раздела в FAT32...${NC}"
+    echo  # Пустая строка после сообщения
     $FAT_CMD -F32 -n "EFI" "$EFI_PART" >> "$LOG_FILE" 2>&1
     if [ $? -ne 0 ]; then
         error_exit "Failed to format EFI partition / Не удалось отформатировать EFI раздел"
@@ -783,6 +795,7 @@ format_partitions() {
         parted "$TARGET_DISK" set 1 esp on >> "$LOG_FILE" 2>&1
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✓ Флаг ESP успешно установлен${NC}"
+            echo  # Пустая строка после установки флага
         fi
     fi
     
@@ -833,6 +846,7 @@ mount_partitions() {
     else
         echo -e "${GREEN}Partitions mounted${NC}"
     fi
+    echo  # Пустая строка после монтирования
 }
 
 # ========== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ПРОВЕРКИ МОНТИРОВАНИЯ ==========
@@ -1002,18 +1016,20 @@ copy_system() {
     fi
     
     if [ "$LANG" = "ru" ]; then
-        echo -e "${GREEN}✓ Размеры подходят для копирования${NC}\n"
+        echo -e "${GREEN}✓ Размеры подходят для копирования${NC}"
     else
-        echo -e "${GREEN}✓ Sizes are OK for copying${NC}\n"
+        echo -e "${GREEN}✓ Sizes are OK for copying${NC}"
     fi
+    echo    # Две пустые строки после проверки
+    echo
     # ========== КОНЕЦ ПРОВЕРКИ РАЗМЕРОВ ==========
     
     # Копирование boot раздела
     log "INFO" "Копирование boot раздела"
     if [ "$LANG" = "ru" ]; then
-        echo -e "\n${YELLOW}Копирование boot раздела...${NC}"
+        echo -e "${YELLOW}Копирование boot раздела...${NC}"
     else
-        echo -e "\n${YELLOW}Copying boot partition...${NC}"
+        echo -e "${YELLOW}Copying boot partition...${NC}"
     fi
     
     # Временный файл для вывода rsync
@@ -1068,12 +1084,6 @@ copy_system() {
                     echo -e "${GREEN}✓ Boot partition copy completed${NC}"
                 fi
                 log "INFO" "Boot раздел успешно скопирован через rsync (размер не определён)"
-                # Отладка - первые 10 строк файла
-                log "INFO" "=== ПЕРВЫЕ 10 СТРОК ВЫВОДА RSYNC ==="
-                head -10 "$TEMP_RSYNC_OUT" 2>/dev/null | while read line; do
-                    log "INFO" "RSYNC: $line"
-                done
-                log "INFO" "=== КОНЕЦ ВЫВОДА RSYNC ==="
             fi
         else
             # Ошибка rsync - логируем причину и пробуем cp
@@ -1119,11 +1129,12 @@ copy_system() {
     fi
     
     # Копирование data раздела
-    log "INFO" "Копирование data раздела"
     if [ "$LANG" = "ru" ]; then
-        echo -e "\n${YELLOW}Копирование data раздела...${NC}"
+        echo    # Пустая строка между boot и data
+        echo -e "${YELLOW}Копирование data раздела...${NC}"
     else
-        echo -e "\n${YELLOW}Copying data partition...${NC}"
+        echo
+        echo -e "${YELLOW}Copying data partition...${NC}"
     fi
     
     if command -v rsync >/dev/null 2>&1; then
@@ -1131,7 +1142,6 @@ copy_system() {
         RSYNC_VERSION=$(rsync --version 2>/dev/null | head -1)
         log "INFO" "Найден rsync: $RSYNC_VERSION"
         
-        # Копируем с флагом -v для получения статистики
         rsync -av /mnt/source_data/ /mnt/data/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
@@ -1175,12 +1185,6 @@ copy_system() {
                     echo -e "${GREEN}✓ Data partition copy completed${NC}"
                 fi
                 log "INFO" "Data раздел успешно скопирован через rsync (размер не определён)"
-                # Отладка - первые 10 строк файла
-                log "INFO" "=== ПЕРВЫЕ 10 СТРОК ВЫВОДА RSYNC ==="
-                head -10 "$TEMP_RSYNC_OUT" 2>/dev/null | while read line; do
-                    log "INFO" "RSYNC: $line"
-                done
-                log "INFO" "=== КОНЕЦ ВЫВОДА RSYNC ==="
             fi
         else
             log "WARNING" "rsync завершился с ошибкой (код: $RSYNC_EXIT)"
@@ -1221,6 +1225,7 @@ copy_system() {
         fi
     fi
     
+    echo  # Пустая строка после копирования
     log "INFO" "Копирование завершено"
     
     # Размонтирование исходных разделов
@@ -1287,6 +1292,7 @@ update_partuuid() {
             else
                 echo -e "${GREEN}Bootloader configuration updated${NC}"
             fi
+            echo  # Пустая строка после обновления
         else
             log "ERROR" "Не удалось обновить grub.cfg"
             if [ "$LANG" = "ru" ]; then
@@ -1349,6 +1355,7 @@ cleanup() {
     else
         echo -e "\r${GREEN}✓ Cleanup completed (${DURATION} sec)${NC}"
     fi
+    echo  # Пустая строка после очистки
     
     # Подсчет статистики (приблизительный)
     if [ "$LANG" = "ru" ]; then
@@ -1376,82 +1383,3 @@ cleanup() {
         echo -e "${YELLOW}Press the appropriate key immediately after power on${NC}"
         echo -e ""
         echo -e "${YELLOW}Installation log: $LOG_FILE${NC}"
-        echo -e "${GREEN}========================================${NC}\n"
-    fi
-    
-    # Пауза, чтобы пользователь прочитал сообщение
-    read -p "$(echo -e "${YELLOW}Press Enter to exit / Нажмите Enter для выхода${NC}")"
-}
-
-# ========== ОСНОВНАЯ ЛОГИКА ==========
-
-# Настройка логирования
-setup_logging
-
-# Выбор языка
-choose_language
-
-# ========== ПРОВЕРКА ИНТЕРНЕТА ==========
-if [ "$LANG" = "ru" ]; then
-    echo -e "${YELLOW}Проверка подключения к интернету...${NC}"
-else
-    echo -e "${YELLOW}Checking internet connection...${NC}"
-fi
-
-check_internet
-INTERNET_STATUS=$?
-
-if [ $INTERNET_STATUS -ne 0 ]; then
-    if [ "$LANG" = "ru" ]; then
-        echo -e "\n${RED}ОШИБКА: Для работы скрипта необходим доступ в интернет.${NC}"
-        echo -e "${YELLOW}Проверены: 1.1.1.1, 9.9.9.9, openwrt.org, kernel.org${NC}"
-        echo -e "${YELLOW}Пожалуйста, подключите сетевой кабель и запустите скрипт заново.${NC}\n"
-    else
-        echo -e "\n${RED}ERROR: Internet connection is required for this script.${NC}"
-        echo -e "${YELLOW}Checked: 1.1.1.1, 9.9.9.9, openwrt.org, kernel.org${NC}"
-        echo -e "${YELLOW}Please connect network cable and run the script again.${NC}\n"
-    fi
-    log "ERROR" "Нет подключения к интернету. Скрипт остановлен."
-    exit 1
-fi
-
-if [ "$LANG" = "ru" ]; then
-    echo -e "${GREEN}Интернет доступен. Продолжаем...${NC}\n"
-else
-    echo -e "${GREEN}Internet is available. Continuing...${NC}\n"
-fi
-
-# Установка пакетов
-install_packages
-
-# Проверка наличия необходимых команд
-check_required_commands
-
-# Выбор целевого диска (куда устанавливать)
-select_target_disk
-
-# Поиск исходного диска (откуда копировать)
-find_source_disk
-
-# Проверка, что диски разные
-check_disks_different
-
-# Создание разделов (с автоматическим размонтированием)
-create_partitions
-
-# Форматирование
-format_partitions
-
-# Монтирование
-mount_partitions
-
-# Копирование
-copy_system
-
-# Обновление PARTUUID
-update_partuuid
-
-# Очистка
-cleanup
-
-exit 0
