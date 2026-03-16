@@ -21,6 +21,7 @@ cleanup_on_exit() {
     umount /mnt/source_boot 2>/dev/null
     umount /mnt/source_data 2>/dev/null
     umount /mnt/scan_disk 2>/dev/null
+    rm -f /tmp/rsync_out.* 2>/dev/null
     log "INFO" "Скрипт прерван пользователем"
     exit 1
 }
@@ -1027,12 +1028,11 @@ copy_system() {
         rsync -a /mnt/source_boot/ /mnt/efi/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
-        # ==== СОХРАНЯЕМ ВЫВОД RSYNC В ОСНОВНОЙ ЛОГ ====
+        # Сохраняем вывод rsync в основной лог
         cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
-        # ============================================
         
         if [ $RSYNC_EXIT -eq 0 ]; then
-            # Улучшенный парсинг размера (убираем запятые)
+            # Парсинг размера (убираем запятые)
             TOTAL_SIZE=""
             
             # Способ 1: строка "total size is"
@@ -1041,11 +1041,6 @@ copy_system() {
             # Способ 2: строка "sent"
             if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
                 TOTAL_SIZE=$(grep "^sent" "$TEMP_RSYNC_OUT" 2>/dev/null | head -1 | awk '{print $2}' | sed 's/,//g')
-            fi
-            
-            # Способ 3: последнее число в файле
-            if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
-                TOTAL_SIZE=$(grep -Eo '[0-9,]+' "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | sed 's/,//g')
             fi
             
             if [ -n "$TOTAL_SIZE" ] && [ "$TOTAL_SIZE" != "0" ]; then
@@ -1065,17 +1060,10 @@ copy_system() {
                 log "INFO" "Boot раздел успешно скопирован через rsync (размер не определён)"
             fi
         else
-            # Ошибка rsync - логируем причину и падаем в cp
+            # Ошибка rsync - логируем и пробуем cp
             log "WARNING" "rsync завершился с ошибкой (код: $RSYNC_EXIT)"
-            
-            # Парсим ошибку из вывода
-            RSYNC_ERROR=$(grep -i "error\|failed\|cannot" "$TEMP_RSYNC_OUT" 2>/dev/null | head -3 | tr '\n' '; ')
-            if [ -n "$RSYNC_ERROR" ]; then
-                log "WARNING" "Ошибка rsync: $RSYNC_ERROR"
-            fi
-            
-            # Пробуем через cp как запасной вариант
             log "INFO" "Пробуем скопировать через cp (как запасной вариант)"
+            
             cp -a /mnt/source_boot/. /mnt/efi/ >> "$LOG_FILE" 2>&1
             if [ $? -eq 0 ]; then
                 if [ "$LANG" = "ru" ]; then
@@ -1089,7 +1077,7 @@ copy_system() {
                 error_exit "Failed to copy boot partition / Не удалось скопировать boot раздел"
             fi
         fi
-        rm -f "$TEMP_RSYNC_OUT"
+        # НЕ УДАЛЯЕМ временный файл! Он пригодится для отладки и будет удалён при очистке
     else
         # rsync не найден в системе
         log "INFO" "rsync не установлен в системе, используется cp"
@@ -1123,12 +1111,11 @@ copy_system() {
         rsync -a /mnt/source_data/ /mnt/data/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
-        # ==== СОХРАНЯЕМ ВЫВОД RSYNC В ОСНОВНОЙ ЛОГ ====
+        # Сохраняем вывод rsync в основной лог
         cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
-        # ============================================
         
         if [ $RSYNC_EXIT -eq 0 ]; then
-            # Улучшенный парсинг размера (убираем запятые)
+            # Парсинг размера (убираем запятые)
             TOTAL_SIZE=""
             
             # Способ 1: строка "total size is"
@@ -1137,11 +1124,6 @@ copy_system() {
             # Способ 2: строка "sent"
             if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
                 TOTAL_SIZE=$(grep "^sent" "$TEMP_RSYNC_OUT" 2>/dev/null | head -1 | awk '{print $2}' | sed 's/,//g')
-            fi
-            
-            # Способ 3: последнее число в файле
-            if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
-                TOTAL_SIZE=$(grep -Eo '[0-9,]+' "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | sed 's/,//g')
             fi
             
             if [ -n "$TOTAL_SIZE" ] && [ "$TOTAL_SIZE" != "0" ]; then
@@ -1162,13 +1144,8 @@ copy_system() {
             fi
         else
             log "WARNING" "rsync завершился с ошибкой (код: $RSYNC_EXIT)"
-            
-            RSYNC_ERROR=$(grep -i "error\|failed\|cannot" "$TEMP_RSYNC_OUT" 2>/dev/null | head -3 | tr '\n' '; ')
-            if [ -n "$RSYNC_ERROR" ]; then
-                log "WARNING" "Ошибка rsync: $RSYNC_ERROR"
-            fi
-            
             log "INFO" "Пробуем скопировать через cp (как запасной вариант)"
+            
             cp -a /mnt/source_data/. /mnt/data/ >> "$LOG_FILE" 2>&1
             if [ $? -eq 0 ]; then
                 if [ "$LANG" = "ru" ]; then
@@ -1182,7 +1159,7 @@ copy_system() {
                 error_exit "Failed to copy data partition / Не удалось скопировать data раздел"
             fi
         fi
-        rm -f "$TEMP_RSYNC_OUT"
+        # НЕ УДАЛЯЕМ временный файл!
     else
         log "INFO" "rsync не установлен в системе, используется cp"
         cp -a /mnt/source_data/. /mnt/data/ >> "$LOG_FILE" 2>&1
@@ -1287,15 +1264,14 @@ update_partuuid() {
 cleanup() {
     log "INFO" "Очистка и финализация"
     
-    # Запускаем спиннер с цветом
+    # Запускаем спиннер (жёлтый текст + обычный символ)
     {
         local spin='-\|/'
         local i=0
         
         while kill -0 $$ 2>/dev/null; do
             i=$(( (i+1) % 4 ))
-            # Вся строка целиком перезаписывается с цветом
-            printf "\r${YELLOW}Очистка... ${spin:$i:1}${NC}"
+            printf "\r${YELLOW}Очистка...${NC} %s" "${spin:$i:1}"
             sleep 1
         done
     } &
@@ -1309,6 +1285,9 @@ cleanup() {
     umount /mnt/data 2>/dev/null
     rmdir /mnt/efi /mnt/data 2>/dev/null
     
+    # Удаляем все временные файлы rsync
+    rm -f /tmp/rsync_out.* 2>/dev/null
+    
     # Считаем время
     END_TIME=$(date +%s)
     DURATION=$((END_TIME - START_TIME))
@@ -1319,7 +1298,7 @@ cleanup() {
     
     log "INFO" "Очистка завершена за $DURATION секунд"
     
-    # Финальное сообщение с временем (перезаписывает последнюю строку спиннера)
+    # Финальное сообщение с временем
     if [ "$LANG" = "ru" ]; then
         echo -e "\r${GREEN}✓ Очистка завершена (${DURATION} сек)${NC}"
     else
