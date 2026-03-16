@@ -1023,13 +1023,30 @@ copy_system() {
         RSYNC_VERSION=$(rsync --version 2>/dev/null | head -1)
         log "INFO" "Найден rsync: $RSYNC_VERSION"
         
-        # Пробуем скопировать через rsync
+        # Копируем и сохраняем вывод
         rsync -a /mnt/source_boot/ /mnt/efi/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
+        # Сохраняем вывод rsync в основной лог
+        cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
+        
         if [ $RSYNC_EXIT -eq 0 ]; then
-            # Успешно
-            TOTAL_SIZE=$(grep "total size is" "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | awk '{print $4}')
+            # Улучшенный парсинг размера (убираем запятые)
+            TOTAL_SIZE=""
+            
+            # Способ 1: строка "total size is"
+            TOTAL_SIZE=$(grep "total size is" "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/,//g')
+            
+            # Способ 2: строка "sent"
+            if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
+                TOTAL_SIZE=$(grep "^sent" "$TEMP_RSYNC_OUT" 2>/dev/null | head -1 | awk '{print $2}' | sed 's/,//g')
+            fi
+            
+            # Способ 3: последнее число в файле
+            if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
+                TOTAL_SIZE=$(grep -Eo '[0-9,]+' "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | sed 's/,//g')
+            fi
+            
             if [ -n "$TOTAL_SIZE" ] && [ "$TOTAL_SIZE" != "0" ]; then
                 SIZE_HUMAN=$(format_size "$TOTAL_SIZE")
                 if [ "$LANG" = "ru" ]; then
@@ -1054,9 +1071,6 @@ copy_system() {
             RSYNC_ERROR=$(grep -i "error\|failed\|cannot" "$TEMP_RSYNC_OUT" 2>/dev/null | head -3 | tr '\n' '; ')
             if [ -n "$RSYNC_ERROR" ]; then
                 log "WARNING" "Ошибка rsync: $RSYNC_ERROR"
-            else
-                log "WARNING" "Полный вывод rsync сохранён в логе"
-                cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
             fi
             
             # Пробуем через cp как запасной вариант
@@ -1108,8 +1122,26 @@ copy_system() {
         rsync -a /mnt/source_data/ /mnt/data/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
+        # Сохраняем вывод rsync в основной лог
+        cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
+        
         if [ $RSYNC_EXIT -eq 0 ]; then
-            TOTAL_SIZE=$(grep "total size is" "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | awk '{print $4}')
+            # Улучшенный парсинг размера (убираем запятые)
+            TOTAL_SIZE=""
+            
+            # Способ 1: строка "total size is"
+            TOTAL_SIZE=$(grep "total size is" "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/,//g')
+            
+            # Способ 2: строка "sent"
+            if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
+                TOTAL_SIZE=$(grep "^sent" "$TEMP_RSYNC_OUT" 2>/dev/null | head -1 | awk '{print $2}' | sed 's/,//g')
+            fi
+            
+            # Способ 3: последнее число в файле
+            if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
+                TOTAL_SIZE=$(grep -Eo '[0-9,]+' "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | sed 's/,//g')
+            fi
+            
             if [ -n "$TOTAL_SIZE" ] && [ "$TOTAL_SIZE" != "0" ]; then
                 SIZE_HUMAN=$(format_size "$TOTAL_SIZE")
                 if [ "$LANG" = "ru" ]; then
@@ -1132,9 +1164,6 @@ copy_system() {
             RSYNC_ERROR=$(grep -i "error\|failed\|cannot" "$TEMP_RSYNC_OUT" 2>/dev/null | head -3 | tr '\n' '; ')
             if [ -n "$RSYNC_ERROR" ]; then
                 log "WARNING" "Ошибка rsync: $RSYNC_ERROR"
-            else
-                log "WARNING" "Полный вывод rsync сохранён в логе"
-                cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
             fi
             
             log "INFO" "Пробуем скопировать через cp (как запасной вариант)"
@@ -1262,7 +1291,7 @@ cleanup() {
         echo -e "${YELLOW}Cleaning up...${NC}"
     fi
     
-    # Запускаем спиннер
+    # Запускаем спиннер (с целыми секундами)
     {
         local spin='-\|/'
         local i=0
@@ -1270,7 +1299,7 @@ cleanup() {
         while kill -0 $$ 2>/dev/null; do
             i=$(( (i+1) % 4 ))
             printf "\r${YELLOW}Очистка... ${spin:$i:1}${NC}"
-            sleep 0.5
+            sleep 1  # Целое число, работает везде
         done
     } &
     SPINNER_PID=$!
