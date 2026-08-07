@@ -691,7 +691,7 @@ unmount_target_disk() {
     log "INFO" "Размонтирование целевого диска завершено"
 }
 
-# Создание разделов на целевом диске
+# ========== ИЗМЕНЕННАЯ ФУНКЦИЯ: Создание разделов на целевом диске ==========
 create_partitions() {
     log "INFO" "Создание разделов на $TARGET_DISK"
     
@@ -705,6 +705,108 @@ create_partitions() {
     unmount_target_disk
     echo  # Пустая строка после размонтирования
     
+    # ========== ЗАПРОС РАЗМЕРА DATA РАЗДЕЛА ==========
+    # Получаем общий размер диска в байтах
+    if command -v blockdev >/dev/null 2>&1; then
+        DISK_SIZE_BYTES=$(blockdev --getsize64 "$TARGET_DISK" 2>/dev/null)
+    fi
+    
+    # Если blockdev не сработал, пробуем через /sys
+    if [ -z "$DISK_SIZE_BYTES" ] || [ "$DISK_SIZE_BYTES" -eq 0 ]; then
+        DISK_NAME=$(basename "$TARGET_DISK")
+        if [ -f "/sys/block/$DISK_NAME/size" ]; then
+            SECTORS=$(cat "/sys/block/$DISK_NAME/size" 2>/dev/null)
+            if [ -n "$SECTORS" ] && [ "$SECTORS" -gt 0 ]; then
+                DISK_SIZE_BYTES=$((SECTORS * 512))
+            fi
+        fi
+    fi
+    
+    # Если не удалось определить размер, используем запасной вариант
+    if [ -z "$DISK_SIZE_BYTES" ] || [ "$DISK_SIZE_BYTES" -eq 0 ]; then
+        log "WARNING" "Не удалось определить размер диска, используется запасной вариант"
+        if [ "$LANG" = "ru" ]; then
+            echo -e "${YELLOW}Не удалось определить размер диска. Используется значение по умолчанию: 16 ГБ${NC}"
+        else
+            echo -e "${YELLOW}Could not determine disk size. Using default: 16 GB${NC}"
+        fi
+        DISK_SIZE_BYTES=$((16 * 1073741824))
+    fi
+    
+    DISK_SIZE_GB=$((DISK_SIZE_BYTES / 1073741824))
+    MAX_DATA_SIZE=$((DISK_SIZE_GB - 1))  # Оставляем минимум 1 ГБ для EFI
+    
+    if [ "$LANG" = "ru" ]; then
+        echo -e "\n${YELLOW}Размер диска $TARGET_DISK: ${GREEN}${DISK_SIZE_GB} ГБ${NC}"
+        echo -e "${YELLOW}Укажите размер DATA раздела в гигабайтах (GB)${NC}"
+        echo -e "${YELLOW}Минимальный размер: 1 ГБ${NC}"
+        echo -e "${YELLOW}Максимальный размер: ${MAX_DATA_SIZE} ГБ (с учётом EFI раздела)${NC}"
+        echo -e "${YELLOW}Оставшееся место будет неиспользованным${NC}"
+        echo -e "${YELLOW}Введите размер (целое число):${NC}"
+    else
+        echo -e "\n${YELLOW}Disk $TARGET_DISK size: ${GREEN}${DISK_SIZE_GB} GB${NC}"
+        echo -e "${YELLOW}Specify DATA partition size in gigabytes (GB)${NC}"
+        echo -e "${YELLOW}Minimum size: 1 GB${NC}"
+        echo -e "${YELLOW}Maximum size: ${MAX_DATA_SIZE} GB (considering EFI partition)${NC}"
+        echo -e "${YELLOW}Remaining space will be unused${NC}"
+        echo -e "${YELLOW}Enter size (integer):${NC}"
+    fi
+    
+    while true; do
+        read -p "> " DATA_SIZE_GB
+        
+        # Проверка что введено целое число
+        if ! echo "$DATA_SIZE_GB" | grep -qE '^[0-9]+$'; then
+            if [ "$LANG" = "ru" ]; then
+                echo -e "${RED}Ошибка: введите целое число (например: 10, 20, 50)${NC}"
+            else
+                echo -e "${RED}Error: enter an integer (e.g.: 10, 20, 50)${NC}"
+            fi
+            continue
+        fi
+        
+        # Проверка минимального размера
+        if [ "$DATA_SIZE_GB" -lt 1 ]; then
+            if [ "$LANG" = "ru" ]; then
+                echo -e "${RED}Ошибка: минимальный размер 1 ГБ${NC}"
+            else
+                echo -e "${RED}Error: minimum size is 1 GB${NC}"
+            fi
+            continue
+        fi
+        
+        # Проверка максимального размера (оставляем минимум 1 ГБ для EFI)
+        if [ "$DATA_SIZE_GB" -gt "$MAX_DATA_SIZE" ]; then
+            if [ "$LANG" = "ru" ]; then
+                echo -e "${RED}Ошибка: максимальный размер ${MAX_DATA_SIZE} ГБ (нужно оставить место для EFI раздела)${NC}"
+            else
+                echo -e "${RED}Error: maximum size is ${MAX_DATA_SIZE} GB (need to leave space for EFI partition)${NC}"
+            fi
+            continue
+        fi
+        
+        # Если все проверки пройдены - выходим из цикла
+        break
+    done
+    
+    # Конвертируем в байты для sfdisk
+    DATA_SIZE_BYTES=$((DATA_SIZE_GB * 1073741824))
+    REMAINING_GB=$((DISK_SIZE_GB - DATA_SIZE_GB - 1))
+    
+    if [ "$LANG" = "ru" ]; then
+        echo -e "${GREEN}Выбран размер DATA раздела: ${DATA_SIZE_GB} ГБ${NC}"
+        if [ "$REMAINING_GB" -gt 0 ]; then
+            echo -e "${YELLOW}Неиспользованное место: ${REMAINING_GB} ГБ${NC}"
+        fi
+    else
+        echo -e "${GREEN}Selected DATA partition size: ${DATA_SIZE_GB} GB${NC}"
+        if [ "$REMAINING_GB" -gt 0 ]; then
+            echo -e "${YELLOW}Unused space: ${REMAINING_GB} GB${NC}"
+        fi
+    fi
+    echo  # Пустая строка после выбора размера
+    # ========== КОНЕЦ ЗАПРОСА РАЗМЕРА ==========
+    
     # Очистка существующей таблицы разделов и создание GPT
     log "INFO" "Очистка диска и создание GPT таблицы"
     dd if=/dev/zero of="$TARGET_DISK" bs=1M count=1 >> "$LOG_FILE" 2>&1
@@ -716,8 +818,8 @@ create_partitions() {
     # Создание EFI раздела (256 MB) с правильным типом для UEFI
     echo "size=256M, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=\"EFI\"" | sfdisk --force -a "$TARGET_DISK" >> "$LOG_FILE" 2>&1
     
-    # Создание DATA раздела на остатке
-    echo "type=L, name=\"DATA\"" | sfdisk --force -a "$TARGET_DISK" >> "$LOG_FILE" 2>&1
+    # Создание DATA раздела указанного пользователем размера
+    echo "size=${DATA_SIZE_BYTES}B, type=L, name=\"DATA\"" | sfdisk --force -a "$TARGET_DISK" >> "$LOG_FILE" 2>&1
     
     if [ $? -ne 0 ]; then
         error_exit "Failed to create partitions / Не удалось создать разделы"
@@ -735,14 +837,21 @@ create_partitions() {
     if [ "$LANG" = "ru" ]; then
         echo -e "${GREEN}Разделы созданы:${NC}"
         echo "  EFI: $EFI_PART (256 MB, тип: EFI System)"
-        echo "  DATA: $DATA_PART (остаток)"
+        echo "  DATA: $DATA_PART (${DATA_SIZE_GB} ГБ, тип: Linux filesystem)"
+        if [ "$REMAINING_GB" -gt 0 ]; then
+            echo "  Неиспользованное место: ${REMAINING_GB} ГБ"
+        fi
     else
         echo -e "${GREEN}Partitions created:${NC}"
         echo "  EFI: $EFI_PART (256 MB, type: EFI System)"
-        echo "  DATA: $DATA_PART (remaining)"
+        echo "  DATA: $DATA_PART (${DATA_SIZE_GB} GB, type: Linux filesystem)"
+        if [ "$REMAINING_GB" -gt 0 ]; then
+            echo "  Unused space: ${REMAINING_GB} GB"
+        fi
     fi
     echo  # Пустая строка после создания разделов
 }
+# ========== КОНЕЦ ИЗМЕНЕННОЙ ФУНКЦИИ ==========
 
 # ========== ФОРМАТИРОВАНИЕ РАЗДЕЛОВ ==========
 format_partitions() {
@@ -1255,8 +1364,7 @@ update_partuuid() {
         PARTUUID=$(blkid -s PARTUUID -o value "$DATA_PART")
     fi
     
-    if [ -z "$PARTUUID" ] && command -v lsblk >/dev/null 2>&1; then
-        PARTUUID=$(lsblk -no PARTUUID "$DATA_PART" 2>/dev/null)
+    if [ -z "$PARTUUID" ] && command -v lsblk >/dev/null 2>&1; then        PARTUUID=$(lsblk -no PARTUUID "$DATA_PART" 2>/dev/null)
     fi
     
     if [ -z "$PARTUUID" ] && [ -e "/sys/block/$(basename $DATA_PART)/partition_uuid" ]; then
