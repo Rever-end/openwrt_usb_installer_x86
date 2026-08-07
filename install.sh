@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # OpenWRT USB to Internal Disk Installer (x86)
-# Version: 2.0
+# Version: 2.1
 # Author: Rever-end
 # License: MIT
 
@@ -10,8 +10,8 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-BOLD='\033[1m'      # Жирный текст
-NC='\033[0m' # No Color
+BOLD='\033[1m'
+NC='\033[0m'
 
 # ========== ОБРАБОТКА ПРЕРЫВАНИЙ ==========
 cleanup_on_exit() {
@@ -22,6 +22,7 @@ cleanup_on_exit() {
     umount /mnt/source_data 2>/dev/null
     umount /mnt/scan_disk 2>/dev/null
     rm -f /tmp/rsync_out.* 2>/dev/null
+    rm -f /tmp/sfdisk_script.* 2>/dev/null
     log "INFO" "Скрипт прерван пользователем"
     exit 1
 }
@@ -36,6 +37,8 @@ LANG=""
 SELECTED_DISK=""
 SOURCE_DISK=""
 TARGET_DISK=""
+EFI_PART=""
+DATA_PART=""
 
 # ========== ФУНКЦИИ ==========
 
@@ -59,7 +62,6 @@ error_exit() {
     echo -e "${RED}${message}${NC}" >&2
     log "ERROR" "$message"
     
-    # Предложить просмотр лога
     if [ "$LANG" = "ru" ]; then
         echo -e "${YELLOW}Хотите открыть лог для просмотра? (y/n): ${NC}"
     else
@@ -84,7 +86,7 @@ error_exit() {
     exit 1
 }
 
-# ========== ВЫБОР ЯЗЫКА (ЦВЕТНОЙ) ==========
+# ========== ВЫБОР ЯЗЫКА ==========
 choose_language() {
     echo -e "\n${YELLOW}Please choose your language / Пожалуйста, выберите язык:${NC}"
     echo -e "${GREEN}1) Русский${NC}"
@@ -110,11 +112,10 @@ choose_language() {
     esac
 }
 
-# ========== ФУНКЦИЯ ПРОВЕРКИ ИНТЕРНЕТА ==========
+# ========== ПРОВЕРКА ИНТЕРНЕТА ==========
 check_internet() {
     log "INFO" "Проверка подключения к интернету..."
     
-    # Цели для проверки (без массивов, совместимо с ash)
     local targets="1.1.1.1 9.9.9.9 openwrt.org kernel.org"
     local success=0
     
@@ -128,7 +129,6 @@ check_internet() {
         fi
     done
     
-    # Если ping не сработал, пробуем curl (на случай блокировки ICMP)
     if [ $success -eq 0 ] && command -v curl >/dev/null 2>&1; then
         log "INFO" "Пинг не сработал, пробуем curl..."
         if curl -s --connect-timeout 3 "http://1.1.1.1" >/dev/null 2>&1; then
@@ -156,17 +156,16 @@ install_packages() {
         echo -e "${YELLOW}Installing required packages...${NC}"
     fi
     
-    # Определяем менеджер пакетов (apk или opkg)
     if command -v apk >/dev/null 2>&1; then
         PKG_MANAGER="apk"
         PKG_UPDATE="apk update"
         PKG_INSTALL="apk add"
-        log "INFO" "Используется apk (новые версии OpenWRT)"
+        log "INFO" "Используется apk"
     elif command -v opkg >/dev/null 2>&1; then
         PKG_MANAGER="opkg"
         PKG_UPDATE="opkg update"
         PKG_INSTALL="opkg install"
-        log "INFO" "Используется opkg (старые версии OpenWRT)"
+        log "INFO" "Используется opkg"
     else
         log "WARNING" "Не найден менеджер пакетов"
         if [ "$LANG" = "ru" ]; then
@@ -177,21 +176,18 @@ install_packages() {
         return 1
     fi
     
-    # Список необходимых пакетов
-    PACKAGES="sfdisk dosfstools rsync blkid nano parted mount-utils"
+    PACKAGES="sfdisk dosfstools rsync blkid nano parted mount-utils blockdev"
     
-    # Обновление списка пакетов
     log "INFO" "Обновление списка пакетов..."
     if [ "$LANG" = "ru" ]; then
         echo -e "${YELLOW}Обновление списка пакетов...${NC}"
     else
         echo -e "${YELLOW}Updating package list...${NC}"
     fi
-    echo  # Пустая строка после сообщения
+    echo
     
     eval $PKG_UPDATE >> "$LOG_FILE" 2>&1
     
-    # Установка пакетов по одному
     for pkg in $PACKAGES; do
         log "INFO" "Установка $pkg..."
         if [ "$LANG" = "ru" ]; then
@@ -224,7 +220,7 @@ install_packages() {
     else
         echo -e "${GREEN}Package installation completed${NC}"
     fi
-    echo  # Пустая строка после завершения
+    echo
 }
 
 # Проверка наличия необходимых команд
@@ -243,7 +239,7 @@ check_required_commands() {
     fi
 }
 
-# ========== ВЫБОР ЦЕЛЕВОГО ДИСКА (КУДА УСТАНАВЛИВАТЬ) ==========
+# ========== ВЫБОР ЦЕЛЕВОГО ДИСКА ==========
 select_target_disk() {
     log "INFO" "Выбор целевого диска для установки"
     
@@ -255,18 +251,15 @@ select_target_disk() {
         echo -e "${RED}WARNING: All data on this disk will be destroyed!${NC}\n"
     fi
     
-    # Получаем список дисков через /sys/block
     DISK_LIST=""
     DISK_COUNT=0
     
     for disk in /sys/block/*; do
         disk_name=$(basename "$disk")
-        # Пропускаем loop-устройства и RAM-диски
         case "$disk_name" in
             loop*|ram*|sr*) continue ;;
         esac
         
-        # Получаем размер диска
         if [ -f "$disk/size" ]; then
             size_sectors=$(cat "$disk/size")
             size_bytes=$((size_sectors * 512))
@@ -279,13 +272,11 @@ select_target_disk() {
             size_human="Unknown"
         fi
         
-        # Получаем модель диска (если есть)
         model=""
         if [ -f "$disk/device/model" ]; then
             model=$(cat "$disk/device/model")
         fi
         
-        # Проверяем, не является ли диск съёмным
         removable=""
         if [ -f "$disk/removable" ]; then
             if [ "$(cat "$disk/removable")" = "1" ]; then
@@ -303,7 +294,6 @@ select_target_disk() {
         error_exit "No disks found / Не найдено дисков"
     fi
     
-    # Выбор диска
     if [ "$LANG" = "ru" ]; then
         echo -e "\n${YELLOW}Введите номер диска для установки OpenWRT:${NC}"
     else
@@ -311,12 +301,10 @@ select_target_disk() {
     fi
     read -p "> " DISK_NUM
     
-    # Проверка ввода
     if ! echo "$DISK_NUM" | grep -qE '^[0-9]+$' || [ "$DISK_NUM" -lt 1 ] || [ "$DISK_NUM" -gt "$DISK_COUNT" ]; then
         error_exit "Invalid disk number / Неверный номер диска"
     fi
     
-    # Получаем выбранный диск
     SELECTED_DISK="/dev/$(echo $DISK_LIST | cut -d' ' -f $DISK_NUM)"
     
     if [ "$LANG" = "ru" ]; then
@@ -327,7 +315,6 @@ select_target_disk() {
     
     log "INFO" "Выбран целевой диск: $SELECTED_DISK"
     
-    # Подтверждение
     if [ "$LANG" = "ru" ]; then
         read -p "$(echo -e "${YELLOW}Установить OpenWRT на этот диск? (y/N): ${NC}")" CONFIRM
     else
@@ -338,10 +325,9 @@ select_target_disk() {
         error_exit "Operation cancelled / Операция отменена"
     fi
     
-    # Финальное предупреждение
     echo -e "\n${RED}WARNING: ALL DATA ON $SELECTED_DISK WILL BE DESTROYED!${NC}"
     echo -e "${RED}ПРЕДУПРЕЖДЕНИЕ: ВСЕ ДАННЫЕ НА $SELECTED_DISK БУДУТ УНИЧТОЖЕНЫ!${NC}"
-    echo  # Пустая строка после предупреждения
+    echo
     
     if [ "$LANG" = "ru" ]; then
         read -p "$(echo -e "${RED}Введите 'yes' для подтверждения форматирования: ${NC}")" FINAL_CONFIRM
@@ -368,10 +354,9 @@ find_source_disk() {
         echo -e "\n${YELLOW}=== LOOKING FOR SOURCE DISK WITH OpenWRT ===${NC}"
         echo -e "${YELLOW}Scanning disks for OpenWRT files...${NC}"
     fi
-    echo    # Две пустые строки после сканирования
+    echo
     echo
     
-    # Создаём временную директорию для монтирования
     mkdir -p /mnt/scan_disk
     
     SOURCE_DISK=""
@@ -380,29 +365,24 @@ find_source_disk() {
     FIRST_FOUND=""
     FIRST_MODEL=""
     
-    # Перебираем все диски
     for disk in /sys/block/*; do
         disk_name=$(basename "$disk")
-        # Пропускаем loop-устройства и RAM-диски
         case "$disk_name" in
             loop*|ram*|sr*) continue ;;
         esac
         
         disk_dev="/dev/$disk_name"
         
-        # Пропускаем целевой диск, если он уже выбран
         if [ -n "$TARGET_DISK" ] && [ "$disk_dev" = "$TARGET_DISK" ]; then
             log "INFO" "Пропускаем целевой диск: $disk_dev"
             continue
         fi
         
-        # Получаем модель диска для красивого вывода
         model=""
         if [ -f "$disk/device/model" ]; then
             model=$(cat "$disk/device/model")
         fi
         
-        # Перебираем все разделы диска (до 8)
         for part_num in 1 2 3 4 5 6 7 8; do
             part_dev="${disk_dev}${part_num}"
             
@@ -412,62 +392,38 @@ find_source_disk() {
             
             log "INFO" "Проверка $part_dev на наличие OpenWRT"
             
-            # Пробуем примонтировать
             if mount "$part_dev" /mnt/scan_disk 2>/dev/null; then
-                
                 FOUND=0
                 REASON=""
                 
-                # ========== ПРОВЕРКА ПРИЗНАКОВ OPENWRT ==========
-                
-                # Основной признак - openwrt_release
                 if [ -f "/mnt/scan_disk/etc/openwrt_release" ]; then
                     FOUND=1
                     REASON="openwrt_release"
-                
-                # Файл os-release с ID=openwrt
                 elif [ -f "/mnt/scan_disk/etc/os-release" ] && grep -q "^ID=openwrt" "/mnt/scan_disk/etc/os-release" 2>/dev/null; then
                     FOUND=1
                     REASON="os-release (ID=openwrt)"
-                
-                # Файл os-release с NAME=OpenWrt
                 elif [ -f "/mnt/scan_disk/etc/os-release" ] && grep -q "^NAME=.*OpenWrt" "/mnt/scan_disk/etc/os-release" 2>/dev/null; then
                     FOUND=1
                     REASON="os-release (NAME=OpenWrt)"
-                
-                # Файл banner с текстом OpenWrt
                 elif [ -f "/mnt/scan_disk/etc/banner" ] && grep -q "OpenWrt" "/mnt/scan_disk/etc/banner" 2>/dev/null; then
                     FOUND=1
                     REASON="banner (OpenWrt)"
-                
-                # Новый пакетный менеджер apk
                 elif [ -d "/mnt/scan_disk/etc/apk" ]; then
                     FOUND=1
                     REASON="apk directory"
-                
-                # Старый пакетный менеджер opkg
                 elif [ -d "/mnt/scan_disk/etc/opkg" ]; then
                     FOUND=1
                     REASON="opkg directory"
-                
-                # Старая версия opkg в lib
                 elif [ -d "/mnt/scan_disk/lib/opkg" ]; then
                     FOUND=1
                     REASON="lib/opkg directory"
-                
-                # Файл version с текстом OpenWrt
                 elif [ -f "/mnt/scan_disk/etc/version" ] && grep -q "OpenWrt" "/mnt/scan_disk/etc/version" 2>/dev/null; then
                     FOUND=1
                     REASON="version file"
-                
-                # Директория /rom (характерно для OpenWRT)
                 elif [ -d "/mnt/scan_disk/rom" ]; then
                     FOUND=1
                     REASON="/rom directory"
-                
-                # Наличие busybox (запасной вариант)
                 elif [ -f "/mnt/scan_disk/bin/busybox" ]; then
-                    # Дополнительная проверка: если нет признаков других дистрибутивов
                     if [ ! -f "/mnt/scan_disk/etc/debian_version" ] && \
                        [ ! -f "/mnt/scan_disk/etc/redhat-release" ] && \
                        [ ! -f "/mnt/scan_disk/etc/arch-release" ]; then
@@ -475,7 +431,6 @@ find_source_disk() {
                         REASON="busybox (embedded)"
                     fi
                 fi
-                # ========== КОНЕЦ ПРОВЕРКИ ==========
                 
                 umount /mnt/scan_disk
                 
@@ -483,25 +438,20 @@ find_source_disk() {
                     FOUND_COUNT=$((FOUND_COUNT + 1))
                     FOUND_DISKS="$FOUND_DISKS $disk_dev"
                     
-                    # Запоминаем первый найденный диск (для случая одного диска)
                     if [ $FOUND_COUNT -eq 1 ]; then
                         FIRST_FOUND="$disk_dev"
                         FIRST_MODEL="$model"
                     fi
                     
-                    # Переходим к следующему диску (не проверяем остальные разделы)
                     break
                 fi
             fi
         done
     done
     
-    # Удаляем временную директорию
     rmdir /mnt/scan_disk 2>/dev/null
     
-    # Анализируем результаты
     if [ $FOUND_COUNT -eq 0 ]; then
-        # Если не нашли ни одного диска с OpenWRT
         log "ERROR" "Не найдено ни одного диска с OpenWRT"
         
         if [ "$LANG" = "ru" ]; then
@@ -514,7 +464,6 @@ find_source_disk() {
             echo -e "${YELLOW}Available disks:${NC}\n"
         fi
         
-        # Показываем все диски для ручного выбора
         SOURCE_COUNT=0
         SOURCE_DISKS=""
         
@@ -526,12 +475,10 @@ find_source_disk() {
             
             disk_dev="/dev/$disk_name"
             
-            # Пропускаем целевой диск
             if [ -n "$TARGET_DISK" ] && [ "$disk_dev" = "$TARGET_DISK" ]; then
                 continue
             fi
             
-            # Получаем размер и модель
             if [ -f "$disk/size" ]; then
                 size_sectors=$(cat "$disk/size")
                 size_bytes=$((size_sectors * 512))
@@ -560,7 +507,6 @@ find_source_disk() {
         fi
         
         if [ $SOURCE_COUNT -eq 1 ]; then
-            # Если только один вариант
             SOURCE_DISK=$(echo $SOURCE_DISKS | tr ' ' '\n' | sed -n "1p")
             if [ "$LANG" = "ru" ]; then
                 echo -e "\n${GREEN}Найден единственный возможный диск: $SOURCE_DISK${NC}"
@@ -573,12 +519,11 @@ find_source_disk() {
             if [ -z "$SOURCE_CONFIRM" ] || [ "$SOURCE_CONFIRM" = "y" ] || [ "$SOURCE_CONFIRM" = "Y" ]; then
                 log "INFO" "Исходный диск выбран из единственного варианта: $SOURCE_DISK"
                 echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}"
-                echo  # Пустая строка после подтверждения
+                echo
             else
                 error_exit "Operation cancelled / Операция отменена"
             fi
         else
-            # Если несколько вариантов - выбор по номеру
             if [ "$LANG" = "ru" ]; then
                 echo -e "\n${YELLOW}Введите номер диска для копирования системы:${NC}"
             else
@@ -593,15 +538,14 @@ find_source_disk() {
             SOURCE_DISK=$(echo $SOURCE_DISKS | tr ' ' '\n' | sed -n "${SOURCE_NUM}p")
             log "INFO" "Исходный диск выбран вручную: $SOURCE_DISK"
             echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}"
-            echo  # Пустая строка после выбора
+            echo
         fi
         
     elif [ $FOUND_COUNT -eq 1 ]; then
-        # Нашли ровно один диск с OpenWRT
         SOURCE_DISK="$FIRST_FOUND"
         if [ "$LANG" = "ru" ]; then
             echo -e "\n${GREEN}Найден диск с OpenWRT: $SOURCE_DISK $FIRST_MODEL${NC}"
-            echo  # Пустая строка перед вопросом
+            echo
             read -p "$(echo -e "${YELLOW}Копировать систему с этого диска? (Y/n): ${NC}")" SOURCE_CONFIRM
         else
             echo -e "\n${GREEN}Found OpenWRT disk: $SOURCE_DISK $FIRST_MODEL${NC}"
@@ -612,13 +556,12 @@ find_source_disk() {
         if [ -z "$SOURCE_CONFIRM" ] || [ "$SOURCE_CONFIRM" = "y" ] || [ "$SOURCE_CONFIRM" = "Y" ]; then
             log "INFO" "Исходный диск подтверждён: $SOURCE_DISK"
             echo -e "${GREEN}Исходный диск: $SOURCE_DISK${NC}"
-            echo  # Пустая строка после подтверждения
+            echo
         else
             error_exit "Operation cancelled / Операция отменена"
         fi
         
     else
-        # Нашли несколько дисков с OpenWRT
         if [ "$LANG" = "ru" ]; then
             echo -e "\n${YELLOW}Найдено несколько дисков с OpenWRT:${NC}"
             echo -e "${YELLOW}Выберите нужный:${NC}\n"
@@ -627,7 +570,6 @@ find_source_disk() {
             echo -e "${YELLOW}Select the correct one:${NC}\n"
         fi
         
-        # Выводим список найденных дисков
         DISK_NUM=1
         for disk in $FOUND_DISKS; do
             disk_name=$(basename "$disk")
@@ -648,7 +590,7 @@ find_source_disk() {
         SOURCE_DISK=$(echo $FOUND_DISKS | tr ' ' '\n' | sed -n "${SOURCE_NUM}p")
         log "INFO" "Исходный диск выбран из нескольких: $SOURCE_DISK"
         echo -e "${GREEN}Выбран исходный диск: $SOURCE_DISK${NC}"
-        echo  # Пустая строка после выбора
+        echo
     fi
 }
 
@@ -669,7 +611,6 @@ unmount_target_disk() {
         echo -e "${YELLOW}Checking and unmounting target disk partitions...${NC}"
     fi
     
-    # Размонтируем все разделы целевого диска
     for part in $(ls ${TARGET_DISK}* 2>/dev/null); do
         if mount | grep -q "$part"; then
             log "INFO" "Размонтирование $part"
@@ -678,7 +619,6 @@ unmount_target_disk() {
         fi
     done
     
-    # Отключаем swap на целевом диске
     for part in $(ls ${TARGET_DISK}* 2>/dev/null); do
         if swapon -s 2>/dev/null | grep -q "$part"; then
             log "INFO" "Отключение swap на $part"
@@ -686,12 +626,11 @@ unmount_target_disk() {
         fi
     done
     
-    # Даем системе время на освобождение
     sleep 2
     log "INFO" "Размонтирование целевого диска завершено"
 }
 
-# ========== ИЗМЕНЕННАЯ ФУНКЦИЯ: Создание разделов на целевом диске ==========
+# ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ: Создание разделов ==========
 create_partitions() {
     log "INFO" "Создание разделов на $TARGET_DISK"
     
@@ -701,17 +640,15 @@ create_partitions() {
         echo -e "${YELLOW}Creating partitions on $TARGET_DISK...${NC}"
     fi
     
-    # Сначала размонтируем целевой диск
     unmount_target_disk
-    echo  # Пустая строка после размонтирования
+    echo
     
     # ========== ЗАПРОС РАЗМЕРА DATA РАЗДЕЛА ==========
-    # Получаем общий размер диска в байтах
+    DISK_SIZE_BYTES=""
     if command -v blockdev >/dev/null 2>&1; then
         DISK_SIZE_BYTES=$(blockdev --getsize64 "$TARGET_DISK" 2>/dev/null)
     fi
     
-    # Если blockdev не сработал, пробуем через /sys
     if [ -z "$DISK_SIZE_BYTES" ] || [ "$DISK_SIZE_BYTES" -eq 0 ]; then
         DISK_NAME=$(basename "$TARGET_DISK")
         if [ -f "/sys/block/$DISK_NAME/size" ]; then
@@ -722,9 +659,8 @@ create_partitions() {
         fi
     fi
     
-    # Если не удалось определить размер, используем запасной вариант
     if [ -z "$DISK_SIZE_BYTES" ] || [ "$DISK_SIZE_BYTES" -eq 0 ]; then
-        log "WARNING" "Не удалось определить размер диска, используется запасной вариант"
+        log "WARNING" "Не удалось определить размер диска"
         if [ "$LANG" = "ru" ]; then
             echo -e "${YELLOW}Не удалось определить размер диска. Используется значение по умолчанию: 16 ГБ${NC}"
         else
@@ -734,7 +670,7 @@ create_partitions() {
     fi
     
     DISK_SIZE_GB=$((DISK_SIZE_BYTES / 1073741824))
-    MAX_DATA_SIZE=$((DISK_SIZE_GB - 1))  # Оставляем минимум 1 ГБ для EFI
+    MAX_DATA_SIZE=$((DISK_SIZE_GB - 1))
     
     if [ "$LANG" = "ru" ]; then
         echo -e "\n${YELLOW}Размер диска $TARGET_DISK: ${GREEN}${DISK_SIZE_GB} ГБ${NC}"
@@ -755,7 +691,6 @@ create_partitions() {
     while true; do
         read -p "> " DATA_SIZE_GB
         
-        # Проверка что введено целое число
         if ! echo "$DATA_SIZE_GB" | grep -qE '^[0-9]+$'; then
             if [ "$LANG" = "ru" ]; then
                 echo -e "${RED}Ошибка: введите целое число (например: 10, 20, 50)${NC}"
@@ -765,7 +700,6 @@ create_partitions() {
             continue
         fi
         
-        # Проверка минимального размера
         if [ "$DATA_SIZE_GB" -lt 1 ]; then
             if [ "$LANG" = "ru" ]; then
                 echo -e "${RED}Ошибка: минимальный размер 1 ГБ${NC}"
@@ -775,7 +709,6 @@ create_partitions() {
             continue
         fi
         
-        # Проверка максимального размера (оставляем минимум 1 ГБ для EFI)
         if [ "$DATA_SIZE_GB" -gt "$MAX_DATA_SIZE" ]; then
             if [ "$LANG" = "ru" ]; then
                 echo -e "${RED}Ошибка: максимальный размер ${MAX_DATA_SIZE} ГБ (нужно оставить место для EFI раздела)${NC}"
@@ -785,12 +718,9 @@ create_partitions() {
             continue
         fi
         
-        # Если все проверки пройдены - выходим из цикла
         break
     done
     
-    # Конвертируем в байты для sfdisk
-    DATA_SIZE_BYTES=$((DATA_SIZE_GB * 1073741824))
     REMAINING_GB=$((DISK_SIZE_GB - DATA_SIZE_GB - 1))
     
     if [ "$LANG" = "ru" ]; then
@@ -804,31 +734,52 @@ create_partitions() {
             echo -e "${YELLOW}Unused space: ${REMAINING_GB} GB${NC}"
         fi
     fi
-    echo  # Пустая строка после выбора размера
-    # ========== КОНЕЦ ЗАПРОСА РАЗМЕРА ==========
+    echo
     
-    # Очистка существующей таблицы разделов и создание GPT
+    # Очистка диска
     log "INFO" "Очистка диска и создание GPT таблицы"
     dd if=/dev/zero of="$TARGET_DISK" bs=1M count=1 >> "$LOG_FILE" 2>&1
     
-    # Создание разделов через sfdisk с флагом --force
+    # ========== СОЗДАНИЕ РАЗДЕЛОВ ==========
     log "INFO" "Создание разделов через sfdisk"
-    echo "label: gpt" | sfdisk --force "$TARGET_DISK" >> "$LOG_FILE" 2>&1
     
-    # Создание EFI раздела (256 MB) с правильным типом для UEFI
-    echo "size=256M, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=\"EFI\"" | sfdisk --force -a "$TARGET_DISK" >> "$LOG_FILE" 2>&1
+    SFDISK_SCRIPT="/tmp/sfdisk_script.$$"
     
-    # Создание DATA раздела указанного пользователем размера
-    echo "size=${DATA_SIZE_BYTES}B, type=L, name=\"DATA\"" | sfdisk --force -a "$TARGET_DISK" >> "$LOG_FILE" 2>&1
+    cat > "$SFDISK_SCRIPT" << EOF
+label: gpt
+size=256M, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="EFI"
+size=${DATA_SIZE_GB}G, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="DATA"
+EOF
+    
+    log "INFO" "Создание разделов с размером DATA: ${DATA_SIZE_GB}G"
+    
+    sfdisk --force "$TARGET_DISK" < "$SFDISK_SCRIPT" >> "$LOG_FILE" 2>&1
     
     if [ $? -ne 0 ]; then
-        error_exit "Failed to create partitions / Не удалось создать разделы"
+        log "WARNING" "Не удалось создать разделы через указание размера в ГБ, пробуем в секторах"
+        
+        DATA_SIZE_SECTORS=$((DATA_SIZE_GB * 1024 * 1024 * 2))
+        
+        cat > "$SFDISK_SCRIPT" << EOF
+label: gpt
+size=256M, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="EFI"
+size=${DATA_SIZE_SECTORS}S, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="DATA"
+EOF
+        
+        sfdisk --force "$TARGET_DISK" < "$SFDISK_SCRIPT" >> "$LOG_FILE" 2>&1
+        
+        if [ $? -ne 0 ]; then
+            rm -f "$SFDISK_SCRIPT" 2>/dev/null
+            error_exit "Failed to create partitions / Не удалось создать разделы"
+        fi
     fi
     
-    log "INFO" "Разделы созданы успешно"
-    sleep 2  # Даем ядру время на обновление
+    rm -f "$SFDISK_SCRIPT" 2>/dev/null
+    # ========== КОНЕЦ СОЗДАНИЯ РАЗДЕЛОВ ==========
     
-    # Определение созданных разделов
+    log "INFO" "Разделы созданы успешно"
+    sleep 2
+    
     EFI_PART="${TARGET_DISK}1"
     DATA_PART="${TARGET_DISK}2"
     
@@ -849,9 +800,8 @@ create_partitions() {
             echo "  Unused space: ${REMAINING_GB} GB"
         fi
     fi
-    echo  # Пустая строка после создания разделов
+    echo
 }
-# ========== КОНЕЦ ИЗМЕНЕННОЙ ФУНКЦИИ ==========
 
 # ========== ФОРМАТИРОВАНИЕ РАЗДЕЛОВ ==========
 format_partitions() {
@@ -863,7 +813,6 @@ format_partitions() {
         echo -e "${YELLOW}Formatting partitions...${NC}"
     fi
     
-    # Проверяем, не примонтированы ли разделы
     if mount | grep -q "$EFI_PART"; then
         umount "$EFI_PART" 2>/dev/null
     fi
@@ -871,7 +820,6 @@ format_partitions() {
         umount "$DATA_PART" 2>/dev/null
     fi
     
-    # Определяем доступную команду для FAT
     FAT_CMD=""
     if command -v mkfs.fat >/dev/null 2>&1; then
         FAT_CMD="mkfs.fat"
@@ -888,27 +836,24 @@ format_partitions() {
     
     log "INFO" "Используется команда для FAT: $FAT_CMD"
     
-    # Форматирование EFI в FAT32
     log "INFO" "Форматирование $EFI_PART в FAT32"
     echo -e "${YELLOW}Форматирование EFI раздела в FAT32...${NC}"
-    echo  # Пустая строка после сообщения
+    echo
     $FAT_CMD -F32 -n "EFI" "$EFI_PART" >> "$LOG_FILE" 2>&1
     if [ $? -ne 0 ]; then
         error_exit "Failed to format EFI partition / Не удалось отформатировать EFI раздел"
     fi
     
-    # Установка флага ESP
     if command -v parted >/dev/null 2>&1; then
         log "INFO" "Установка флага esp on через parted"
         echo -e "${YELLOW}Устанавливаем флаг ESP (EFI System Partition) для загрузки в UEFI...${NC}"
         parted "$TARGET_DISK" set 1 esp on >> "$LOG_FILE" 2>&1
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✓ Флаг ESP успешно установлен${NC}"
-            echo  # Пустая строка после установки флага
+            echo
         fi
     fi
     
-    # Форматирование DATA в ext4
     log "INFO" "Форматирование $DATA_PART в ext4"
     echo -e "${YELLOW}Форматирование DATA раздела в ext4...${NC}"
     mkfs.ext4 -F -L "DATA" "$DATA_PART" >> "$LOG_FILE" 2>&1
@@ -933,16 +878,13 @@ mount_partitions() {
         echo -e "${YELLOW}Mounting partitions...${NC}"
     fi
     
-    # Создание точек монтирования
     mkdir -p /mnt/efi /mnt/data
     
-    # Монтирование EFI
     mount "$EFI_PART" /mnt/efi >> "$LOG_FILE" 2>&1
     if [ $? -ne 0 ]; then
         error_exit "Failed to mount EFI partition / Не удалось примонтировать EFI раздел"
     fi
     
-    # Монтирование DATA
     mount "$DATA_PART" /mnt/data >> "$LOG_FILE" 2>&1
     if [ $? -ne 0 ]; then
         umount /mnt/efi 2>/dev/null
@@ -955,27 +897,24 @@ mount_partitions() {
     else
         echo -e "${GREEN}Partitions mounted${NC}"
     fi
-    echo  # Пустая строка после монтирования
+    echo
 }
 
 # ========== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ПРОВЕРКИ МОНТИРОВАНИЯ ==========
 is_mounted() {
     local dir="$1"
     
-    # Если есть команда mountpoint - используем её
     if command -v mountpoint >/dev/null 2>&1; then
         mountpoint -q "$dir" 2>/dev/null
         return $?
     fi
     
-    # Если нет mountpoint - проверяем через /proc/mounts
     if grep -q " $dir " /proc/mounts 2>/dev/null; then
         return 0
     else
         return 1
     fi
 }
-# ========== КОНЕЦ УНИВЕРСАЛЬНОЙ ФУНКЦИИ ==========
 
 # ========== ФУНКЦИЯ КОНВЕРТАЦИИ РАЗМЕРА ==========
 format_size() {
@@ -989,7 +928,6 @@ format_size() {
     if command -v numfmt >/dev/null 2>&1; then
         numfmt --to=iec "$bytes" 2>/dev/null || echo "${bytes}B"
     else
-        # Ручное форматирование
         if [ "$bytes" -gt 1073741824 ]; then
             echo "$((bytes / 1073741824))G"
         elif [ "$bytes" -gt 1048576 ]; then
@@ -1001,7 +939,6 @@ format_size() {
         fi
     fi
 }
-# ========== КОНЕЦ ФУНКЦИИ КОНВЕРТАЦИИ ==========
 
 # Копирование системы
 copy_system() {
@@ -1013,11 +950,9 @@ copy_system() {
         echo -e "${YELLOW}Copying system from source disk to target...${NC}"
     fi
     
-    # Определяем исходные разделы
     SOURCE_BOOT="${SOURCE_DISK}1"
     SOURCE_DATA="${SOURCE_DISK}2"
     
-    # Проверяем, существуют ли разделы
     if [ ! -b "$SOURCE_BOOT" ]; then
         error_exit "Source boot partition not found: $SOURCE_BOOT / Исходный boot раздел не найден"
     fi
@@ -1025,10 +960,8 @@ copy_system() {
         error_exit "Source data partition not found: $SOURCE_DATA / Исходный data раздел не найден"
     fi
     
-    # Создаем точки монтирования
     mkdir -p /mnt/source_boot /mnt/source_data
     
-    # Проверяем, не примонтированы ли уже разделы
     BOOT_MOUNTED=0
     DATA_MOUNTED=0
     
@@ -1064,21 +997,17 @@ copy_system() {
         echo -e "\n${YELLOW}Checking partition sizes...${NC}"
     fi
     
-    # Получаем размер исходных данных в байтах
     BOOT_SIZE_BYTES=$(du -sb /mnt/source_boot 2>/dev/null | cut -f1)
     DATA_SIZE_BYTES=$(du -sb /mnt/source_data 2>/dev/null | cut -f1)
     
-    # Получаем размер целевых разделов в байтах
     EFI_SIZE_BYTES=$(df -B1 /mnt/efi 2>/dev/null | awk 'NR==2 {print $2}')
     DATA_TARGET_SIZE_BYTES=$(df -B1 /mnt/data 2>/dev/null | awk 'NR==2 {print $2}')
     
-    # Конвертируем в человеко-читаемый формат
     BOOT_SIZE_HUMAN=$(format_size "$BOOT_SIZE_BYTES")
     DATA_SIZE_HUMAN=$(format_size "$DATA_SIZE_BYTES")
     EFI_SIZE_HUMAN=$(format_size "$EFI_SIZE_BYTES")
     DATA_TARGET_SIZE_HUMAN=$(format_size "$DATA_TARGET_SIZE_BYTES")
     
-    # Проверка boot раздела
     if [ -n "$BOOT_SIZE_BYTES" ] && [ -n "$EFI_SIZE_BYTES" ] && [ "$BOOT_SIZE_BYTES" -gt "$EFI_SIZE_BYTES" ]; then
         log "ERROR" "Boot раздел слишком большой: $BOOT_SIZE_BYTES > $EFI_SIZE_BYTES"
         if [ "$LANG" = "ru" ]; then
@@ -1101,7 +1030,6 @@ copy_system() {
         error_exit "Source boot partition too large / Исходный boot раздел слишком большой"
     fi
     
-    # Проверка data раздела
     if [ -n "$DATA_SIZE_BYTES" ] && [ -n "$DATA_TARGET_SIZE_BYTES" ] && [ "$DATA_SIZE_BYTES" -gt "$DATA_TARGET_SIZE_BYTES" ]; then
         log "ERROR" "Data раздел слишком большой: $DATA_SIZE_BYTES > $DATA_TARGET_SIZE_BYTES"
         if [ "$LANG" = "ru" ]; then
@@ -1129,9 +1057,8 @@ copy_system() {
     else
         echo -e "${GREEN}✓ Sizes are OK for copying${NC}"
     fi
-    echo    # Две пустые строки после проверки
     echo
-    # ========== КОНЕЦ ПРОВЕРКИ РАЗМЕРОВ ==========
+    echo
     
     # Копирование boot раздела
     log "INFO" "Копирование boot раздела"
@@ -1141,39 +1068,30 @@ copy_system() {
         echo -e "${YELLOW}Copying boot partition...${NC}"
     fi
     
-    # Временный файл для вывода rsync
     TEMP_RSYNC_OUT="/tmp/rsync_out.$$"
     
     if command -v rsync >/dev/null 2>&1; then
-        # Проверяем версию rsync
         RSYNC_VERSION=$(rsync --version 2>/dev/null | head -1)
         log "INFO" "Найден rsync: $RSYNC_VERSION"
         
-        # Копируем с флагом -v для получения статистики
         rsync -av /mnt/source_boot/ /mnt/efi/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
-        # Сохраняем вывод rsync в основной лог
         if [ -s "$TEMP_RSYNC_OUT" ]; then
             cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
-            log "INFO" "Вывод rsync сохранён в лог (размер: $(wc -c < "$TEMP_RSYNC_OUT") байт)"
+            log "INFO" "Вывод rsync сохранён в лог"
         else
             log "WARNING" "Файл вывода rsync пуст!"
         fi
         
         if [ $RSYNC_EXIT -eq 0 ]; then
-            # Парсинг размера (убираем запятые)
             TOTAL_SIZE=""
-            
-            # Способ 1: строка "total size is"
             TOTAL_SIZE=$(grep "total size is" "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/,//g')
             
-            # Способ 2: строка "sent"
             if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
                 TOTAL_SIZE=$(grep "^sent" "$TEMP_RSYNC_OUT" 2>/dev/null | head -1 | awk '{print $2}' | sed 's/,//g')
             fi
             
-            # Способ 3: последнее число в файле
             if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
                 TOTAL_SIZE=$(grep -Eo '[0-9,]+' "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | sed 's/,//g')
             fi
@@ -1185,27 +1103,24 @@ copy_system() {
                 else
                     echo -e "${GREEN}✓ Boot partition copy completed (${SIZE_HUMAN})${NC}"
                 fi
-                log "INFO" "Boot раздел успешно скопирован через rsync, размер: $TOTAL_SIZE байт ($SIZE_HUMAN)"
+                log "INFO" "Boot раздел успешно скопирован через rsync"
             else
                 if [ "$LANG" = "ru" ]; then
                     echo -e "${GREEN}✓ Копирование boot раздела завершено${NC}"
                 else
                     echo -e "${GREEN}✓ Boot partition copy completed${NC}"
                 fi
-                log "INFO" "Boot раздел успешно скопирован через rsync (размер не определён)"
+                log "INFO" "Boot раздел успешно скопирован через rsync"
             fi
         else
-            # Ошибка rsync - логируем причину и пробуем cp
             log "WARNING" "rsync завершился с ошибкой (код: $RSYNC_EXIT)"
             
-            # Парсим ошибку из вывода
             RSYNC_ERROR=$(grep -i "error\|failed\|cannot" "$TEMP_RSYNC_OUT" 2>/dev/null | head -3 | tr '\n' '; ')
             if [ -n "$RSYNC_ERROR" ]; then
                 log "WARNING" "Ошибка rsync: $RSYNC_ERROR"
             fi
             
-            # Пробуем через cp как запасной вариант
-            log "INFO" "Пробуем скопировать через cp (как запасной вариант)"
+            log "INFO" "Пробуем скопировать через cp"
             cp -a /mnt/source_boot/. /mnt/efi/ >> "$LOG_FILE" 2>&1
             if [ $? -eq 0 ]; then
                 if [ "$LANG" = "ru" ]; then
@@ -1213,16 +1128,14 @@ copy_system() {
                 else
                     echo -e "${GREEN}✓ Boot partition copy completed${NC}"
                 fi
-                log "INFO" "Boot раздел скопирован через cp (rsync не сработал)"
+                log "INFO" "Boot раздел скопирован через cp"
             else
-                log "ERROR" "Ошибка при копировании boot раздела через cp"
+                log "ERROR" "Ошибка при копировании boot раздела"
                 error_exit "Failed to copy boot partition / Не удалось скопировать boot раздел"
             fi
         fi
-        # НЕ УДАЛЯЕМ временный файл! Он будет удалён при очистке
     else
-        # rsync не найден в системе
-        log "INFO" "rsync не установлен в системе, используется cp"
+        log "INFO" "rsync не установлен, используется cp"
         cp -a /mnt/source_boot/. /mnt/efi/ >> "$LOG_FILE" 2>&1
         if [ $? -eq 0 ]; then
             if [ "$LANG" = "ru" ]; then
@@ -1230,16 +1143,16 @@ copy_system() {
             else
                 echo -e "${GREEN}✓ Boot partition copy completed${NC}"
             fi
-            log "INFO" "Boot раздел скопирован через cp (rsync отсутствует)"
+            log "INFO" "Boot раздел скопирован через cp"
         else
-            log "ERROR" "Ошибка при копировании boot раздела через cp"
+            log "ERROR" "Ошибка при копировании boot раздела"
             error_exit "Failed to copy boot partition / Не удалось скопировать boot раздел"
         fi
     fi
     
     # Копирование data раздела
     if [ "$LANG" = "ru" ]; then
-        echo    # Пустая строка между boot и data
+        echo
         echo -e "${YELLOW}Копирование data раздела...${NC}"
     else
         echo
@@ -1247,34 +1160,27 @@ copy_system() {
     fi
     
     if command -v rsync >/dev/null 2>&1; then
-        # Проверяем версию rsync
         RSYNC_VERSION=$(rsync --version 2>/dev/null | head -1)
         log "INFO" "Найден rsync: $RSYNC_VERSION"
         
         rsync -av /mnt/source_data/ /mnt/data/ > "$TEMP_RSYNC_OUT" 2>&1
         RSYNC_EXIT=$?
         
-        # Сохраняем вывод rsync в основной лог
         if [ -s "$TEMP_RSYNC_OUT" ]; then
             cat "$TEMP_RSYNC_OUT" >> "$LOG_FILE" 2>&1
-            log "INFO" "Вывод rsync сохранён в лог (размер: $(wc -c < "$TEMP_RSYNC_OUT") байт)"
+            log "INFO" "Вывод rsync сохранён в лог"
         else
             log "WARNING" "Файл вывода rsync пуст!"
         fi
         
         if [ $RSYNC_EXIT -eq 0 ]; then
-            # Парсинг размера (убираем запятые)
             TOTAL_SIZE=""
-            
-            # Способ 1: строка "total size is"
             TOTAL_SIZE=$(grep "total size is" "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/,//g')
             
-            # Способ 2: строка "sent"
             if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
                 TOTAL_SIZE=$(grep "^sent" "$TEMP_RSYNC_OUT" 2>/dev/null | head -1 | awk '{print $2}' | sed 's/,//g')
             fi
             
-            # Способ 3: последнее число в файле
             if [ -z "$TOTAL_SIZE" ] || [ "$TOTAL_SIZE" = "0" ]; then
                 TOTAL_SIZE=$(grep -Eo '[0-9,]+' "$TEMP_RSYNC_OUT" 2>/dev/null | tail -1 | sed 's/,//g')
             fi
@@ -1286,14 +1192,14 @@ copy_system() {
                 else
                     echo -e "${GREEN}✓ Data partition copy completed (${SIZE_HUMAN})${NC}"
                 fi
-                log "INFO" "Data раздел успешно скопирован через rsync, размер: $TOTAL_SIZE байт ($SIZE_HUMAN)"
+                log "INFO" "Data раздел успешно скопирован через rsync"
             else
                 if [ "$LANG" = "ru" ]; then
                     echo -e "${GREEN}✓ Копирование data раздела завершено${NC}"
                 else
                     echo -e "${GREEN}✓ Data partition copy completed${NC}"
                 fi
-                log "INFO" "Data раздел успешно скопирован через rsync (размер не определён)"
+                log "INFO" "Data раздел успешно скопирован через rsync"
             fi
         else
             log "WARNING" "rsync завершился с ошибкой (код: $RSYNC_EXIT)"
@@ -1303,7 +1209,7 @@ copy_system() {
                 log "WARNING" "Ошибка rsync: $RSYNC_ERROR"
             fi
             
-            log "INFO" "Пробуем скопировать через cp (как запасной вариант)"
+            log "INFO" "Пробуем скопировать через cp"
             cp -a /mnt/source_data/. /mnt/data/ >> "$LOG_FILE" 2>&1
             if [ $? -eq 0 ]; then
                 if [ "$LANG" = "ru" ]; then
@@ -1311,15 +1217,14 @@ copy_system() {
                 else
                     echo -e "${GREEN}✓ Data partition copy completed${NC}"
                 fi
-                log "INFO" "Data раздел скопирован через cp (rsync не сработал)"
+                log "INFO" "Data раздел скопирован через cp"
             else
-                log "ERROR" "Ошибка при копировании data раздела через cp"
+                log "ERROR" "Ошибка при копировании data раздела"
                 error_exit "Failed to copy data partition / Не удалось скопировать data раздел"
             fi
         fi
-        # НЕ УДАЛЯЕМ временный файл!
     else
-        log "INFO" "rsync не установлен в системе, используется cp"
+        log "INFO" "rsync не установлен, используется cp"
         cp -a /mnt/source_data/. /mnt/data/ >> "$LOG_FILE" 2>&1
         if [ $? -eq 0 ]; then
             if [ "$LANG" = "ru" ]; then
@@ -1327,17 +1232,16 @@ copy_system() {
             else
                 echo -e "${GREEN}✓ Data partition copy completed${NC}"
             fi
-            log "INFO" "Data раздел скопирован через cp (rsync отсутствует)"
+            log "INFO" "Data раздел скопирован через cp"
         else
-            log "ERROR" "Ошибка при копировании data раздела через cp"
+            log "ERROR" "Ошибка при копировании data раздела"
             error_exit "Failed to copy data partition / Не удалось скопировать data раздел"
         fi
     fi
     
-    echo  # Пустая строка после копирования
+    echo
     log "INFO" "Копирование завершено"
     
-    # Размонтирование исходных разделов
     if [ $BOOT_MOUNTED -eq 0 ]; then
         umount /mnt/source_boot 2>/dev/null
     fi
@@ -1358,13 +1262,13 @@ update_partuuid() {
         echo -e "${YELLOW}Updating PARTUUID in bootloader configuration...${NC}"
     fi
     
-    # Получаем PARTUUID для DATA раздела
     PARTUUID=""
     if command -v blkid >/dev/null 2>&1; then
         PARTUUID=$(blkid -s PARTUUID -o value "$DATA_PART")
     fi
     
-    if [ -z "$PARTUUID" ] && command -v lsblk >/dev/null 2>&1; then        PARTUUID=$(lsblk -no PARTUUID "$DATA_PART" 2>/dev/null)
+    if [ -z "$PARTUUID" ] && command -v lsblk >/dev/null 2>&1; then
+        PARTUUID=$(lsblk -no PARTUUID "$DATA_PART" 2>/dev/null)
     fi
     
     if [ -z "$PARTUUID" ] && [ -e "/sys/block/$(basename $DATA_PART)/partition_uuid" ]; then
@@ -1383,14 +1287,10 @@ update_partuuid() {
     
     log "INFO" "PARTUUID для DATA раздела: $PARTUUID"
     
-    # Обновляем grub.cfg на EFI разделе
     GRUB_CFG="/mnt/efi/boot/grub/grub.cfg"
     
     if [ -f "$GRUB_CFG" ]; then
-        # Создаем бэкап
         cp "$GRUB_CFG" "$GRUB_CFG.backup"
-        
-        # Заменяем PARTUUID
         sed -i "s/PARTUUID=[0-9a-f-]*/PARTUUID=$PARTUUID/g" "$GRUB_CFG"
         
         if [ $? -eq 0 ]; then
@@ -1400,7 +1300,7 @@ update_partuuid() {
             else
                 echo -e "${GREEN}Bootloader configuration updated${NC}"
             fi
-            echo  # Пустая строка после обновления
+            echo
         else
             log "ERROR" "Не удалось обновить grub.cfg"
             if [ "$LANG" = "ru" ]; then
@@ -1423,7 +1323,6 @@ update_partuuid() {
 cleanup() {
     log "INFO" "Очистка и финализация"
     
-    # Запускаем спиннер (жёлтый текст + обычный символ)
     {
         local spin='-\|/'
         local i=0
@@ -1436,41 +1335,34 @@ cleanup() {
     } &
     SPINNER_PID=$!
     
-    # Сохраняем время начала
     START_TIME=$(date +%s)
     
-    # Размонтирование
     umount /mnt/efi 2>/dev/null
     umount /mnt/data 2>/dev/null
     rmdir /mnt/efi /mnt/data 2>/dev/null
     
-    # Удаляем все временные файлы rsync
     rm -f /tmp/rsync_out.* 2>/dev/null
+    rm -f /tmp/sfdisk_script.* 2>/dev/null
     
-    # Считаем время
     END_TIME=$(date +%s)
     DURATION=$((END_TIME - START_TIME))
     
-    # Убиваем спиннер
     kill $SPINNER_PID 2>/dev/null
     wait $SPINNER_PID 2>/dev/null
     
     log "INFO" "Очистка завершена за $DURATION секунд"
     
-    # Финальное сообщение с временем
     if [ "$LANG" = "ru" ]; then
         echo -e "\r${GREEN}✓ Очистка завершена (${DURATION} сек)${NC}"
     else
         echo -e "\r${GREEN}✓ Cleanup completed (${DURATION} sec)${NC}"
     fi
-    echo  # Пустая строка после очистки
+    echo
     
-    # Подсчет статистики (приблизительный)
     if [ "$LANG" = "ru" ]; then
         echo -e "\n${GREEN}========================================${NC}"
         echo -e "${GREEN}Установка завершена!${NC}"
         echo -e "${RED}========================================${NC}"
-        # Жирный текст и ПОЛНОСТЬЮ КАПС для важного сообщения
         echo -e "${RED}${BOLD}ВАЖНО: ПОСЛЕ ПЕРЕЗАГРУЗКИ ВЫБЕРИТЕ НОВЫЙ ДИСК В BOOT MENU BIOS/UEFI${NC}"
         echo -e ""
         echo -e "${YELLOW}Для входа в Boot Menu обычно используются клавиши:${NC}"
@@ -1483,7 +1375,6 @@ cleanup() {
         echo -e "\n${GREEN}========================================${NC}"
         echo -e "${GREEN}Installation completed!${NC}"
         echo -e "${RED}========================================${NC}"
-        # Жирный текст и ПОЛНОСТЬЮ КАПС для важного сообщения
         echo -e "${RED}${BOLD}IMPORTANT: AFTER REBOOT, SELECT THE NEW DISK IN BOOT MENU BIOS/UEFI${NC}"
         echo -e ""
         echo -e "${YELLOW}Common keys to enter Boot Menu:${NC}"
@@ -1494,20 +1385,16 @@ cleanup() {
         echo -e "${GREEN}========================================${NC}\n"
     fi
     
-    # Пауза, чтобы пользователь прочитал сообщение
     read -p "$(echo -e "${YELLOW}Press Enter to exit / Нажмите Enter для выхода${NC}")"
 }
 
 # ========== ОСНОВНАЯ ЛОГИКА ==========
 
-# Настройка логирования
 setup_logging
 
-# Выбор языка
 choose_language
-echo  # Пустая строка после выбора языка
+echo
 
-# ========== ПРОВЕРКА ИНТЕРНЕТА ==========
 if [ "$LANG" = "ru" ]; then
     echo -e "${YELLOW}Проверка подключения к интернету...${NC}"
 else
@@ -1536,40 +1423,29 @@ if [ "$LANG" = "ru" ]; then
 else
     echo -e "${GREEN}Internet is available. Continuing...${NC}"
 fi
-echo    # Две пустые строки после проверки интернета
+echo
 echo
 
-# Установка пакетов
 install_packages
 
-# Проверка наличия необходимых команд
 check_required_commands
 
-# Выбор целевого диска (куда устанавливать)
 select_target_disk
 
-# Поиск исходного диска (откуда копировать)
 find_source_disk
 
-# Проверка, что диски разные
 check_disks_different
 
-# Создание разделов (с автоматическим размонтированием)
 create_partitions
 
-# Форматирование
 format_partitions
 
-# Монтирование
 mount_partitions
 
-# Копирование
 copy_system
 
-# Обновление PARTUUID
 update_partuuid
 
-# Очистка
 cleanup
 
 exit 0
